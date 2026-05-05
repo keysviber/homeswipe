@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "HomeSwipe",
+    "slug": "homeswipe",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "homeswipe",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0f766e"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    }
+  }
+}
