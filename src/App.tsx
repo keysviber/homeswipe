@@ -12,6 +12,7 @@ import {
   View
 } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import * as ImagePicker from 'expo-image-picker';
 
 type TabKey = 'home' | 'tools' | 'messages' | 'profile';
 type ListingKind = 'rentals' | 'sales' | 'stands';
@@ -25,17 +26,31 @@ type Listing = {
   meta: string;
   host: string;
   image: string;
+  photos: string[];
   tag: string;
+  description: string;
+  amenities: string[];
+  details: string[];
 };
 
 type ListingForm = {
   kind: ListingKind;
+  propertyType: string;
+  spaceType: string;
   title: string;
   location: string;
   price: string;
   meta: string;
   host: string;
   image: string;
+  photos: string;
+  localPhotos: string[];
+  description: string;
+  amenities: string;
+  guests: string;
+  bedrooms: string;
+  bathrooms: string;
+  houseRules: string;
 };
 
 type LeaseDraft = {
@@ -55,15 +70,61 @@ type LeaseDraft = {
   tenantSigned: boolean;
 };
 
+type Conversation = {
+  id: string;
+  person: string;
+  role: string;
+  listingTitle: string;
+  time: string;
+  messages: string[];
+};
+
 const emptyListingForm: ListingForm = {
   kind: 'rentals',
+  propertyType: '',
+  spaceType: '',
   title: '',
   location: '',
   price: '',
   meta: '',
   host: '',
-  image: ''
+  image: '',
+  photos: '',
+  localPhotos: [],
+  description: '',
+  amenities: '',
+  guests: '',
+  bedrooms: '',
+  bathrooms: '',
+  houseRules: ''
 };
+
+const initialConversations: Conversation[] = [
+  {
+    id: 'moyo-properties',
+    person: 'Moyo Properties',
+    role: 'Landlord',
+    listingTitle: 'Sunny 2 bed apartment',
+    time: '12:45',
+    messages: ['The Borrowdale apartment is open for viewing at 4 PM.']
+  },
+  {
+    id: 'tari-m',
+    person: 'Tari M.',
+    role: 'Landlord',
+    listingTitle: 'Modern garden cottage',
+    time: '10:12',
+    messages: ['Please send your proof of income for screening.']
+  },
+  {
+    id: 'prime-estates',
+    person: 'Prime Estates',
+    role: 'Agent',
+    listingTitle: 'Family home with pool',
+    time: 'Mon',
+    messages: ['We can share the title deed docs after registration.']
+  }
+];
 
 const initialListings: Listing[] = [
   {
@@ -75,7 +136,16 @@ const initialListings: Listing[] = [
     meta: '2 beds · 2 baths · gated',
     host: 'Moyo Properties',
     image: 'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?auto=format&fit=crop&w=1200&q=80',
-    tag: 'Available now'
+    photos: [
+      'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1560448075-bb485b067938?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1560185007-cde436f6a4d0?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1560448205-4d9b3e6bb6db?auto=format&fit=crop&w=1200&q=80'
+    ],
+    tag: 'Available now',
+    description: 'A bright apartment with open-plan living, secure access, and quick access to Borrowdale shops and schools.',
+    amenities: ['Gated security', 'Backup water', 'Fitted kitchen', 'Balcony'],
+    details: ['2 bedrooms', '2 bathrooms', 'Covered parking', 'Available immediately']
   },
   {
     id: '2',
@@ -86,7 +156,16 @@ const initialListings: Listing[] = [
     meta: '1 bed · furnished · Wi-Fi',
     host: 'Tari Homes',
     image: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80',
-    tag: 'Verified landlord'
+    photos: [
+      'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1560184897-ae75f418493e?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?auto=format&fit=crop&w=1200&q=80'
+    ],
+    tag: 'Verified landlord',
+    description: 'A compact furnished cottage with a private garden, ideal for a single professional or couple.',
+    amenities: ['Furnished', 'Wi-Fi ready', 'Private garden', 'Solar backup'],
+    details: ['1 bedroom', '1 bathroom', 'Shared gate', 'Month-to-month accepted']
   },
   {
     id: '3',
@@ -97,7 +176,16 @@ const initialListings: Listing[] = [
     meta: '4 beds · 3 baths · title deed',
     host: 'Prime Estates',
     image: 'https://images.unsplash.com/photo-1605276374104-dee2a0ed3cd6?auto=format&fit=crop&w=1200&q=80',
-    tag: 'For sale'
+    photos: [
+      'https://images.unsplash.com/photo-1605276374104-dee2a0ed3cd6?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1600566752355-35792bedcfea?auto=format&fit=crop&w=1200&q=80'
+    ],
+    tag: 'For sale',
+    description: 'A spacious family home with mature trees, generous entertainment space, and a clean title deed.',
+    amenities: ['Swimming pool', 'Title deed', 'Staff quarters', 'Borehole'],
+    details: ['4 bedrooms', '3 bathrooms', 'Double garage', '1,800 sqm stand']
   },
   {
     id: '4',
@@ -108,7 +196,16 @@ const initialListings: Listing[] = [
     meta: '3 beds · garage · solar',
     host: 'Kudu Realty',
     image: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80',
-    tag: 'Viewing today'
+    photos: [
+      'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1600607688969-a5bfcd646154?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1600607687644-c7171b42498f?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1600210492493-0946911123ea?auto=format&fit=crop&w=1200&q=80'
+    ],
+    tag: 'Viewing today',
+    description: 'Low-maintenance townhouse near schools and shops, with modern finishes and reliable solar power.',
+    amenities: ['Solar system', 'Garage', 'Modern kitchen', 'Secure complex'],
+    details: ['3 bedrooms', '2.5 bathrooms', 'Sectional title', 'Viewing slots open']
   },
   {
     id: '5',
@@ -119,7 +216,16 @@ const initialListings: Listing[] = [
     meta: '600 sqm · serviced · cession',
     host: 'Stand Market',
     image: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
-    tag: 'Stands'
+    photos: [
+      'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1472396961693-142e6e269027?auto=format&fit=crop&w=1200&q=80'
+    ],
+    tag: 'Stands',
+    description: 'Serviced residential stand in a growing suburb with road access and paperwork ready for transfer.',
+    amenities: ['Serviced land', 'Road access', 'Council approved', 'Ready to build'],
+    details: ['600 sqm', 'Cession', 'Flat terrain', 'Marked boundaries']
   },
   {
     id: '6',
@@ -130,7 +236,16 @@ const initialListings: Listing[] = [
     meta: '900 sqm · road access · council',
     host: 'Green Acre Land',
     image: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
-    tag: 'Popular'
+    photos: [
+      'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1518005020951-eccb494ad742?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=1200&q=80'
+    ],
+    tag: 'Popular',
+    description: 'A corner stand with generous frontage in a developing area suited for a family home or investment build.',
+    amenities: ['Corner stand', 'Road frontage', 'Council paperwork', 'Investment area'],
+    details: ['900 sqm', 'Council stand', 'Road access', 'Flexible payment terms']
   }
 ];
 
@@ -154,6 +269,10 @@ export default function App() {
   const [availableListings, setAvailableListings] = useState<Listing[]>(initialListings);
   const [showListingForm, setShowListingForm] = useState(false);
   const [listingForm, setListingForm] = useState<ListingForm>(emptyListingForm);
+  const [listingStep, setListingStep] = useState(0);
+  const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
+  const [activeConversationId, setActiveConversationId] = useState(initialConversations[0].id);
 
   const filteredListings = useMemo(() => {
     return availableListings.filter((listing) => {
@@ -179,6 +298,24 @@ export default function App() {
         ? 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80'
         : 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80';
 
+    const galleryPhotos = listingForm.photos
+      .split('\n')
+      .map((photo) => photo.trim())
+      .filter(Boolean);
+    const uploadedPhotos = listingForm.localPhotos;
+    const amenities = listingForm.amenities
+      .split(',')
+      .map((amenity) => amenity.trim())
+      .filter(Boolean);
+    const details = [
+      listingForm.propertyType || 'Home',
+      listingForm.spaceType || 'Entire place',
+      listingForm.guests ? `${listingForm.guests} guests` : '',
+      listingForm.bedrooms ? `${listingForm.bedrooms} bedrooms` : '',
+      listingForm.bathrooms ? `${listingForm.bathrooms} bathrooms` : '',
+      listingForm.meta.trim()
+    ].filter(Boolean);
+
     const newListing: Listing = {
       id: `${Date.now()}`,
       kind: listingForm.kind,
@@ -187,14 +324,89 @@ export default function App() {
       price,
       meta: listingForm.meta.trim() || 'Details available on request',
       host,
-      image: listingForm.image.trim() || fallbackImage,
-      tag: listingForm.kind === 'rentals' ? 'New rental' : listingForm.kind === 'sales' ? 'New sale' : 'New stand'
+      image: uploadedPhotos[0] || listingForm.image.trim() || fallbackImage,
+      photos: [uploadedPhotos[0] || listingForm.image.trim() || fallbackImage, ...uploadedPhotos.slice(1), ...galleryPhotos, fallbackImage],
+      tag: listingForm.kind === 'rentals' ? 'New rental' : listingForm.kind === 'sales' ? 'New sale' : 'New stand',
+      description: listingForm.description.trim() || `${title} is listed by ${host}. Contact the landlord to confirm viewing times, documents, and availability.`,
+      amenities: amenities.length > 0 ? amenities : ['Direct landlord contact', 'Viewing available', 'Saved listing', 'Verified details pending'],
+      details: details.length > 0 ? details : [location, price, host]
     };
 
     setAvailableListings((currentListings) => [newListing, ...currentListings]);
     setActiveKind(newListing.kind);
     setListingForm(emptyListingForm);
+    setListingStep(0);
     setShowListingForm(false);
+  };
+
+  const pickListingImages = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsMultipleSelection: true,
+      mediaTypes: ['images'],
+      quality: 0.9
+    });
+
+    if (result.canceled) {
+      return;
+    }
+
+    const pickedPhotos = result.assets.map((asset) => asset.uri);
+    setListingForm((current) => ({
+      ...current,
+      image: current.image || pickedPhotos[0] || '',
+      localPhotos: [...current.localPhotos, ...pickedPhotos]
+    }));
+  };
+
+  const addDroppedListingImages = (uris: string[]) => {
+    if (uris.length === 0) {
+      return;
+    }
+
+    setListingForm((current) => ({
+      ...current,
+      image: current.image || uris[0],
+      localPhotos: [...current.localPhotos, ...uris]
+    }));
+  };
+
+  const openListingConversation = (listing: Listing, openingMessage?: string) => {
+    const conversationId = listing.host.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || listing.id;
+
+    setConversations((currentConversations) => {
+      const existingConversation = currentConversations.find((conversation) => conversation.id === conversationId);
+      if (existingConversation) {
+        return currentConversations.map((conversation) =>
+          conversation.id === conversationId && openingMessage
+            ? { ...conversation, time: 'Now', messages: [...conversation.messages, openingMessage] }
+            : conversation
+        );
+      }
+
+      return [
+        {
+          id: conversationId,
+          person: listing.host,
+          role: listing.kind === 'sales' || listing.kind === 'stands' ? 'Agent' : 'Landlord',
+          listingTitle: listing.title,
+          time: 'Now',
+          messages: [openingMessage || `Hi, I am interested in ${listing.title}. Is it still available?`]
+        },
+        ...currentConversations
+      ];
+    });
+
+    setActiveConversationId(conversationId);
+    setActiveTab('messages');
+  };
+
+  const requestViewing = (listing: Listing, date: string, time: string) => {
+    openListingConversation(listing, `Viewing request for ${listing.title}: ${date} at ${time}.`);
   };
 
   return (
@@ -209,14 +421,28 @@ export default function App() {
             listingForm={listingForm}
             showListingForm={showListingForm}
             addListing={addListing}
+            listingStep={listingStep}
+            selectedListing={selectedListing}
+            onMessageListing={openListingConversation}
+            onPickListingImages={pickListingImages}
+            onRequestViewing={requestViewing}
+            onDropListingImages={addDroppedListingImages}
             setActiveKind={setActiveKind}
             setListingForm={setListingForm}
+            setListingStep={setListingStep}
             setQuery={setQuery}
+            setSelectedListing={setSelectedListing}
             setShowListingForm={setShowListingForm}
           />
         )}
         {activeTab === 'tools' && <ToolsScreen />}
-        {activeTab === 'messages' && <MessagesScreen />}
+        {activeTab === 'messages' && (
+          <MessagesScreen
+            activeConversationId={activeConversationId}
+            conversations={conversations}
+            setActiveConversationId={setActiveConversationId}
+          />
+        )}
         {activeTab === 'profile' && <ProfileScreen />}
       </View>
       <View style={styles.bottomTabs}>
@@ -247,9 +473,17 @@ function HomeScreen({
   query,
   showListingForm,
   addListing,
+  listingStep,
+  selectedListing,
+  onMessageListing,
+  onPickListingImages,
+  onRequestViewing,
+  onDropListingImages,
   setActiveKind,
   setListingForm,
+  setListingStep,
   setQuery,
+  setSelectedListing,
   setShowListingForm
 }: {
   activeKind: ListingKind;
@@ -258,11 +492,30 @@ function HomeScreen({
   query: string;
   showListingForm: boolean;
   addListing: () => void;
+  listingStep: number;
+  selectedListing: Listing | null;
+  onMessageListing: (listing: Listing) => void;
+  onPickListingImages: () => void;
+  onRequestViewing: (listing: Listing, date: string, time: string) => void;
+  onDropListingImages: (uris: string[]) => void;
   setActiveKind: (kind: ListingKind) => void;
   setListingForm: React.Dispatch<React.SetStateAction<ListingForm>>;
+  setListingStep: (step: number) => void;
   setQuery: (value: string) => void;
+  setSelectedListing: (listing: Listing | null) => void;
   setShowListingForm: (value: boolean) => void;
 }) {
+  if (selectedListing) {
+    return (
+      <ListingDetails
+        listing={selectedListing}
+        onBack={() => setSelectedListing(null)}
+        onMessage={() => onMessageListing(selectedListing)}
+        onRequestViewing={(date, time) => onRequestViewing(selectedListing, date, time)}
+      />
+    );
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
@@ -282,69 +535,148 @@ function HomeScreen({
 
       {showListingForm && (
         <View style={styles.formPanel}>
-          <Text style={styles.formTitle}>Add a property listing</Text>
-          <View style={styles.segmentedControl}>
-            {listingFilters.map((filter) => {
-              const selected = listingForm.kind === filter.key;
-              return (
-                <Pressable
-                  key={filter.key}
-                  onPress={() => setListingForm((current) => ({ ...current, kind: filter.key }))}
-                  style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                >
-                  <Text style={[styles.segmentText, selected && styles.segmentTextActive]}>{filter.label}</Text>
-                </Pressable>
-              );
-            })}
+          <View style={styles.panelHeader}>
+            <View>
+              <Text style={styles.formTitle}>Add your place</Text>
+              <Text style={styles.panelHint}>Step {listingStep + 1} of 4</Text>
+            </View>
+            <Ionicons name="home-outline" size={28} color="#0f766e" />
           </View>
-          <View style={styles.formGrid}>
-            <TextInput
-              placeholder="Listing title"
-              placeholderTextColor="#94a3b8"
-              value={listingForm.title}
-              onChangeText={(value) => setListingForm((current) => ({ ...current, title: value }))}
-              style={styles.formInput}
-            />
-            <TextInput
-              placeholder="Location"
-              placeholderTextColor="#94a3b8"
-              value={listingForm.location}
-              onChangeText={(value) => setListingForm((current) => ({ ...current, location: value }))}
-              style={styles.formInput}
-            />
-            <TextInput
-              placeholder="Price"
-              placeholderTextColor="#94a3b8"
-              value={listingForm.price}
-              onChangeText={(value) => setListingForm((current) => ({ ...current, price: value }))}
-              style={styles.formInput}
-            />
-            <TextInput
-              placeholder="Landlord or agency name"
-              placeholderTextColor="#94a3b8"
-              value={listingForm.host}
-              onChangeText={(value) => setListingForm((current) => ({ ...current, host: value }))}
-              style={styles.formInput}
-            />
+          <View style={styles.stepRail}>
+            {['Basics', 'Space', 'Photos', 'Price'].map((step, index) => (
+              <Pressable key={step} style={[styles.stepPill, listingStep === index && styles.stepPillActive]} onPress={() => setListingStep(index)}>
+                <Text style={[styles.stepText, listingStep === index && styles.stepTextActive]}>{step}</Text>
+              </Pressable>
+            ))}
           </View>
-          <TextInput
-            placeholder="Beds, baths, title deeds, stand size, amenities"
-            placeholderTextColor="#94a3b8"
-            value={listingForm.meta}
-            onChangeText={(value) => setListingForm((current) => ({ ...current, meta: value }))}
-            style={styles.formInput}
-          />
-          <TextInput
-            placeholder="Image URL"
-            placeholderTextColor="#94a3b8"
-            value={listingForm.image}
-            onChangeText={(value) => setListingForm((current) => ({ ...current, image: value }))}
-            style={styles.formInput}
-          />
-          <Pressable style={styles.primaryButton} onPress={addListing}>
-            <Ionicons name="cloud-upload-outline" size={20} color="#ffffff" />
-            <Text style={styles.primaryButtonText}>Publish listing</Text>
-          </Pressable>
+
+          {listingStep === 0 && (
+            <>
+              <View style={styles.segmentedControl}>
+                {listingFilters.map((filter) => {
+                  const selected = listingForm.kind === filter.key;
+                  return (
+                    <Pressable
+                      key={filter.key}
+                      onPress={() => setListingForm((current) => ({ ...current, kind: filter.key }))}
+                      style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                    >
+                      <Text style={[styles.segmentText, selected && styles.segmentTextActive]}>{filter.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.formGrid}>
+                <TextInput
+                  placeholder="Property type, e.g. Apartment"
+                  placeholderTextColor="#94a3b8"
+                  value={listingForm.propertyType}
+                  onChangeText={(value) => setListingForm((current) => ({ ...current, propertyType: value }))}
+                  style={styles.formInput}
+                />
+                <TextInput
+                  placeholder="Entire place, room, or stand"
+                  placeholderTextColor="#94a3b8"
+                  value={listingForm.spaceType}
+                  onChangeText={(value) => setListingForm((current) => ({ ...current, spaceType: value }))}
+                  style={styles.formInput}
+                />
+                <TextInput
+                  placeholder="Location"
+                  placeholderTextColor="#94a3b8"
+                  value={listingForm.location}
+                  onChangeText={(value) => setListingForm((current) => ({ ...current, location: value }))}
+                  style={styles.formInput}
+                />
+                <TextInput
+                  placeholder="Landlord or agency name"
+                  placeholderTextColor="#94a3b8"
+                  value={listingForm.host}
+                  onChangeText={(value) => setListingForm((current) => ({ ...current, host: value }))}
+                  style={styles.formInput}
+                />
+              </View>
+            </>
+          )}
+
+          {listingStep === 1 && (
+            <>
+              <View style={styles.formGrid}>
+                <TextInput placeholder="Guests" placeholderTextColor="#94a3b8" value={listingForm.guests} onChangeText={(value) => setListingForm((current) => ({ ...current, guests: value }))} style={styles.formInput} />
+                <TextInput placeholder="Bedrooms" placeholderTextColor="#94a3b8" value={listingForm.bedrooms} onChangeText={(value) => setListingForm((current) => ({ ...current, bedrooms: value }))} style={styles.formInput} />
+                <TextInput placeholder="Bathrooms" placeholderTextColor="#94a3b8" value={listingForm.bathrooms} onChangeText={(value) => setListingForm((current) => ({ ...current, bathrooms: value }))} style={styles.formInput} />
+                <TextInput placeholder="Key amenities, comma separated" placeholderTextColor="#94a3b8" value={listingForm.amenities} onChangeText={(value) => setListingForm((current) => ({ ...current, amenities: value }))} style={styles.formInput} />
+              </View>
+              <TextInput placeholder="House rules or property notes" placeholderTextColor="#94a3b8" value={listingForm.houseRules} onChangeText={(value) => setListingForm((current) => ({ ...current, houseRules: value }))} style={styles.formInput} />
+            </>
+          )}
+
+          {listingStep === 2 && (
+            <>
+              <TextInput placeholder="Listing title" placeholderTextColor="#94a3b8" value={listingForm.title} onChangeText={(value) => setListingForm((current) => ({ ...current, title: value }))} style={styles.formInput} />
+              <ImageDropZone onDropImages={onDropListingImages} onPickImages={onPickListingImages} />
+              {listingForm.localPhotos.length > 0 && (
+                <View style={styles.uploadPreviewGrid}>
+                  {listingForm.localPhotos.map((photo) => (
+                    <View key={photo} style={styles.uploadPreviewItem}>
+                      <Image source={{ uri: photo }} style={styles.uploadPreviewImage} />
+                      <Pressable
+                        accessibilityLabel="Remove photo"
+                        style={styles.removePhotoButton}
+                        onPress={() =>
+                          setListingForm((current) => ({
+                            ...current,
+                            image: current.image === photo ? current.localPhotos.find((item) => item !== photo) || '' : current.image,
+                            localPhotos: current.localPhotos.filter((item) => item !== photo)
+                          }))
+                        }
+                      >
+                        <Ionicons name="close-outline" size={16} color="#ffffff" />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              )}
+              <TextInput placeholder="Cover image URL, optional" placeholderTextColor="#94a3b8" value={listingForm.image} onChangeText={(value) => setListingForm((current) => ({ ...current, image: value }))} style={styles.formInput} />
+              <TextInput placeholder="More photo URLs, one per line" placeholderTextColor="#94a3b8" value={listingForm.photos} onChangeText={(value) => setListingForm((current) => ({ ...current, photos: value }))} style={[styles.formInput, styles.multilineInput]} multiline />
+              <TextInput placeholder="Describe your place" placeholderTextColor="#94a3b8" value={listingForm.description} onChangeText={(value) => setListingForm((current) => ({ ...current, description: value }))} style={[styles.formInput, styles.multilineInput]} multiline />
+            </>
+          )}
+
+          {listingStep === 3 && (
+            <>
+              <View style={styles.formGrid}>
+                <TextInput placeholder="Price, e.g. $850/mo" placeholderTextColor="#94a3b8" value={listingForm.price} onChangeText={(value) => setListingForm((current) => ({ ...current, price: value }))} style={styles.formInput} />
+                <TextInput placeholder="Summary, e.g. 2 beds · gated · solar" placeholderTextColor="#94a3b8" value={listingForm.meta} onChangeText={(value) => setListingForm((current) => ({ ...current, meta: value }))} style={styles.formInput} />
+              </View>
+              <View style={styles.detailFactGrid}>
+                {[listingForm.propertyType, listingForm.spaceType, listingForm.location, listingForm.price].filter(Boolean).map((detail) => (
+                  <View key={detail} style={styles.detailFact}>
+                    <Ionicons name="checkmark-circle-outline" size={19} color="#0f766e" />
+                    <Text style={styles.detailFactText}>{detail}</Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+
+          <View style={styles.formNavRow}>
+            <Pressable style={styles.secondaryButton} onPress={() => setListingStep(Math.max(0, listingStep - 1))}>
+              <Ionicons name="arrow-back-outline" size={18} color="#0f766e" />
+              <Text style={styles.secondaryButtonText}>Back</Text>
+            </Pressable>
+            {listingStep < 3 ? (
+              <Pressable style={styles.primaryButton} onPress={() => setListingStep(Math.min(3, listingStep + 1))}>
+                <Text style={styles.primaryButtonText}>Next</Text>
+                <Ionicons name="arrow-forward-outline" size={18} color="#ffffff" />
+              </Pressable>
+            ) : (
+              <Pressable style={styles.primaryButton} onPress={addListing}>
+                <Ionicons name="cloud-upload-outline" size={20} color="#ffffff" />
+                <Text style={styles.primaryButtonText}>Publish listing</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
       )}
 
@@ -384,16 +716,16 @@ function HomeScreen({
 
       <View style={styles.listGrid}>
         {filteredListings.map((listing) => (
-          <ListingCard key={listing.id} listing={listing} />
+          <ListingCard key={listing.id} listing={listing} onPress={() => setSelectedListing(listing)} />
         ))}
       </View>
     </ScrollView>
   );
 }
 
-function ListingCard({ listing }: { listing: Listing }) {
+function ListingCard({ listing, onPress }: { listing: Listing; onPress: () => void }) {
   return (
-    <Pressable style={styles.listingCard}>
+    <Pressable style={styles.listingCard} onPress={onPress}>
       <Image source={{ uri: listing.image }} style={styles.listingImage} />
       <View style={styles.cardBody}>
         <View style={styles.cardTopline}>
@@ -409,6 +741,185 @@ function ListingCard({ listing }: { listing: Listing }) {
         </View>
       </View>
     </Pressable>
+  );
+}
+
+function ImageDropZone({
+  onDropImages,
+  onPickImages
+}: {
+  onDropImages: (uris: string[]) => void;
+  onPickImages: () => void;
+}) {
+  const webDropProps =
+    Platform.OS === 'web'
+      ? {
+          onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
+            event.preventDefault();
+          },
+          onDrop: (event: React.DragEvent<HTMLDivElement>) => {
+            event.preventDefault();
+            const files = Array.from(event.dataTransfer.files).filter((file) => file.type.startsWith('image/'));
+
+            Promise.all(
+              files.map(
+                (file) =>
+                  new Promise<string>((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result));
+                    reader.readAsDataURL(file);
+                  })
+              )
+            ).then(onDropImages);
+          }
+        }
+      : {};
+
+  return (
+    <Pressable {...webDropProps} style={styles.dropZone} onPress={onPickImages}>
+      <View style={styles.dropZoneIcon}>
+        <Ionicons name="images-outline" size={28} color="#0f766e" />
+      </View>
+      <View style={styles.dropZoneCopy}>
+        <Text style={styles.dropZoneTitle}>Add property photos</Text>
+        <Text style={styles.dropZoneText}>
+          {Platform.OS === 'web' ? 'Drop images here or choose from your device.' : 'Choose images from your gallery.'}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function ListingDetails({
+  listing,
+  onBack,
+  onMessage,
+  onRequestViewing
+}: {
+  listing: Listing;
+  onBack: () => void;
+  onMessage: () => void;
+  onRequestViewing: (date: string, time: string) => void;
+}) {
+  const galleryPhotos = listing.photos.length > 0 ? listing.photos : [listing.image];
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [selectedDate, setSelectedDate] = useState('Tomorrow');
+  const [selectedTime, setSelectedTime] = useState('10:00 AM');
+  const viewingDates = ['Tomorrow', 'Friday', 'Saturday', 'Sunday'];
+  const viewingTimes = ['10:00 AM', '12:30 PM', '3:00 PM', '5:30 PM'];
+
+  return (
+    <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.detailHeader}>
+        <Pressable style={styles.detailBackButton} onPress={onBack} accessibilityLabel="Back to listings">
+          <Ionicons name="chevron-back-outline" size={22} color="#0f172a" />
+        </Pressable>
+        <View style={styles.detailHeaderActions}>
+          <Pressable style={styles.iconButton} accessibilityLabel="Share listing">
+            <Ionicons name="share-outline" size={20} color="#0f172a" />
+          </Pressable>
+          <Pressable style={styles.iconButton} accessibilityLabel="Save listing">
+            <Ionicons name="heart-outline" size={20} color="#0f172a" />
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.photoGallery}>
+        <Image source={{ uri: galleryPhotos[0] }} style={styles.heroPhoto} />
+        <View style={styles.thumbnailGrid}>
+          {galleryPhotos.slice(1, 5).map((photo) => (
+            <Image key={photo} source={{ uri: photo }} style={styles.thumbnailPhoto} />
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.detailTitleRow}>
+        <View style={styles.detailTitleCopy}>
+          <Text style={styles.detailTitle}>{listing.title}</Text>
+          <Text style={styles.detailLocation}>{listing.location}</Text>
+        </View>
+        <Text style={styles.detailPrice}>{listing.price}</Text>
+      </View>
+
+      <View style={styles.detailFactGrid}>
+        {listing.details.map((detail) => (
+          <View key={detail} style={styles.detailFact}>
+            <Ionicons name="checkmark-circle-outline" size={19} color="#0f766e" />
+            <Text style={styles.detailFactText}>{detail}</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.detailSection}>
+        <Text style={styles.detailSectionTitle}>About this property</Text>
+        <Text style={styles.detailDescription}>{listing.description}</Text>
+      </View>
+
+      <View style={styles.detailSection}>
+        <Text style={styles.detailSectionTitle}>What this place offers</Text>
+        <View style={styles.amenityGrid}>
+          {listing.amenities.map((amenity) => (
+            <View key={amenity} style={styles.amenityRow}>
+              <Ionicons name="sparkles-outline" size={18} color="#0f766e" />
+              <Text style={styles.amenityText}>{amenity}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.hostPanel}>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{listing.host.charAt(0)}</Text>
+        </View>
+        <View style={styles.messageCopy}>
+          <Text style={styles.messageName}>{listing.host}</Text>
+          <Text style={styles.messageText}>Verified landlord or agent · responds directly in HomeSwipe messages</Text>
+        </View>
+      </View>
+
+      <View style={styles.detailActionBar}>
+        <Pressable style={styles.secondaryButton} onPress={onMessage}>
+          <Ionicons name="chatbubble-outline" size={18} color="#0f766e" />
+          <Text style={styles.secondaryButtonText}>Message</Text>
+        </Pressable>
+        <Pressable style={styles.primaryButton} onPress={() => setShowCalendar(!showCalendar)}>
+          <Ionicons name="calendar-outline" size={19} color="#ffffff" />
+          <Text style={styles.primaryButtonText}>Request viewing</Text>
+        </Pressable>
+      </View>
+
+      {showCalendar && (
+        <View style={styles.calendarPanel}>
+          <Text style={styles.detailSectionTitle}>Choose a viewing time</Text>
+          <View style={styles.calendarGrid}>
+            {viewingDates.map((date) => {
+              const selected = selectedDate === date;
+              return (
+                <Pressable key={date} style={[styles.calendarChip, selected && styles.calendarChipActive]} onPress={() => setSelectedDate(date)}>
+                  <Ionicons name="calendar-clear-outline" size={18} color={selected ? '#ffffff' : '#0f766e'} />
+                  <Text style={[styles.calendarChipText, selected && styles.calendarChipTextActive]}>{date}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.calendarGrid}>
+            {viewingTimes.map((time) => {
+              const selected = selectedTime === time;
+              return (
+                <Pressable key={time} style={[styles.calendarChip, selected && styles.calendarChipActive]} onPress={() => setSelectedTime(time)}>
+                  <Ionicons name="time-outline" size={18} color={selected ? '#ffffff' : '#0f766e'} />
+                  <Text style={[styles.calendarChipText, selected && styles.calendarChipTextActive]}>{time}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Pressable style={styles.primaryButton} onPress={() => onRequestViewing(selectedDate, selectedTime)}>
+            <Ionicons name="send-outline" size={18} color="#ffffff" />
+            <Text style={styles.primaryButtonText}>Send viewing request</Text>
+          </Pressable>
+        </View>
+      )}
+    </ScrollView>
   );
 }
 
@@ -659,12 +1170,16 @@ function LeaseInput({
   );
 }
 
-function MessagesScreen() {
-  const conversations = [
-    { name: 'Moyo Properties', message: 'The Borrowdale apartment is open for viewing at 4 PM.', time: '12:45' },
-    { name: 'Tari M.', message: 'Please send your proof of income for screening.', time: '10:12' },
-    { name: 'Prime Estates', message: 'We can share the title deed docs after registration.', time: 'Mon' }
-  ];
+function MessagesScreen({
+  activeConversationId,
+  conversations,
+  setActiveConversationId
+}: {
+  activeConversationId: string;
+  conversations: Conversation[];
+  setActiveConversationId: (id: string) => void;
+}) {
+  const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) || conversations[0];
 
   return (
     <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
@@ -672,22 +1187,51 @@ function MessagesScreen() {
       <Text style={styles.subtitle}>Direct communication between landlords and tenants.</Text>
       <View style={styles.messageList}>
         {conversations.map((conversation) => (
-          <Pressable key={conversation.name} style={styles.messageRow}>
+          <Pressable
+            key={conversation.id}
+            style={[styles.messageRow, activeConversation?.id === conversation.id && styles.messageRowActive]}
+            onPress={() => setActiveConversationId(conversation.id)}
+          >
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{conversation.name.charAt(0)}</Text>
+              <Text style={styles.avatarText}>{conversation.person.charAt(0)}</Text>
             </View>
             <View style={styles.messageCopy}>
               <View style={styles.messageMeta}>
-                <Text style={styles.messageName}>{conversation.name}</Text>
+                <Text style={styles.messageName}>{conversation.person}</Text>
                 <Text style={styles.messageTime}>{conversation.time}</Text>
               </View>
               <Text numberOfLines={2} style={styles.messageText}>
-                {conversation.message}
+                {conversation.messages[conversation.messages.length - 1]}
               </Text>
             </View>
           </Pressable>
         ))}
       </View>
+
+      {activeConversation && (
+        <View style={styles.inboxPanel}>
+          <View style={styles.panelHeader}>
+            <View>
+              <Text style={styles.formTitle}>{activeConversation.person}</Text>
+              <Text style={styles.panelHint}>
+                {activeConversation.role} · {activeConversation.listingTitle}
+              </Text>
+            </View>
+            <Ionicons name="chatbubbles-outline" size={28} color="#0f766e" />
+          </View>
+          {activeConversation.messages.map((message, index) => (
+            <View key={`${activeConversation.id}-${index}`} style={styles.chatBubble}>
+              <Text style={styles.chatText}>{message}</Text>
+            </View>
+          ))}
+          <View style={styles.replyBar}>
+            <TextInput placeholder="Write a reply" placeholderTextColor="#94a3b8" style={styles.replyInput} />
+            <Pressable style={styles.replyButton} accessibilityLabel="Send reply">
+              <Ionicons name="send-outline" size={20} color="#ffffff" />
+            </Pressable>
+          </View>
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -984,6 +1528,271 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700'
   },
+  detailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14
+  },
+  detailBackButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  detailHeaderActions: {
+    flexDirection: 'row',
+    gap: 8
+  },
+  photoGallery: {
+    gap: 10,
+    marginBottom: 20
+  },
+  heroPhoto: {
+    width: '100%',
+    aspectRatio: 1.55,
+    borderRadius: 8,
+    backgroundColor: '#cbd5e1'
+  },
+  thumbnailGrid: {
+    flexDirection: 'row',
+    gap: 10
+  },
+  thumbnailPhoto: {
+    flex: 1,
+    aspectRatio: 1.25,
+    borderRadius: 8,
+    backgroundColor: '#cbd5e1'
+  },
+  detailTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    marginBottom: 16
+  },
+  detailTitleCopy: {
+    flex: 1
+  },
+  detailTitle: {
+    color: '#0f172a',
+    fontSize: 28,
+    fontWeight: '900'
+  },
+  detailLocation: {
+    color: '#475569',
+    fontSize: 16,
+    marginTop: 5
+  },
+  detailPrice: {
+    color: '#0f766e',
+    fontSize: 24,
+    fontWeight: '900'
+  },
+  detailFactGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 18
+  },
+  detailFact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 42,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  detailFactText: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '800'
+  },
+  detailSection: {
+    gap: 10,
+    paddingVertical: 18,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0'
+  },
+  detailSectionTitle: {
+    color: '#0f172a',
+    fontSize: 20,
+    fontWeight: '900'
+  },
+  detailDescription: {
+    color: '#475569',
+    fontSize: 16,
+    lineHeight: 24
+  },
+  amenityGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  amenityRow: {
+    width: Platform.OS === 'web' ? '48%' : '100%',
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9
+  },
+  amenityText: {
+    color: '#334155',
+    fontSize: 15,
+    fontWeight: '700'
+  },
+  hostPanel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    marginBottom: 14
+  },
+  detailActionBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  calendarPanel: {
+    gap: 12,
+    padding: 16,
+    marginTop: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#dbeafe'
+  },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  calendarChip: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#99f6e4',
+    backgroundColor: '#ffffff'
+  },
+  calendarChipActive: {
+    backgroundColor: '#0f766e',
+    borderColor: '#0f766e'
+  },
+  calendarChipText: {
+    color: '#0f766e',
+    fontSize: 14,
+    fontWeight: '900'
+  },
+  calendarChipTextActive: {
+    color: '#ffffff'
+  },
+  stepRail: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  stepPill: {
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#e2e8f0'
+  },
+  stepPillActive: {
+    backgroundColor: '#0f766e'
+  },
+  stepText: {
+    color: '#334155',
+    fontSize: 13,
+    fontWeight: '900'
+  },
+  stepTextActive: {
+    color: '#ffffff'
+  },
+  formNavRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  dropZone: {
+    minHeight: 132,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#0f766e',
+    backgroundColor: '#f0fdfa'
+  },
+  dropZoneIcon: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    backgroundColor: '#ccfbf1'
+  },
+  dropZoneCopy: {
+    flex: 1
+  },
+  dropZoneTitle: {
+    color: '#0f172a',
+    fontSize: 17,
+    fontWeight: '900',
+    marginBottom: 4
+  },
+  dropZoneText: {
+    color: '#475569',
+    fontSize: 14,
+    lineHeight: 20
+  },
+  uploadPreviewGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  uploadPreviewItem: {
+    position: 'relative',
+    width: 112,
+    height: 86,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#cbd5e1'
+  },
+  uploadPreviewImage: {
+    width: '100%',
+    height: '100%'
+  },
+  removePhotoButton: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#0f172a'
+  },
   toolList: {
     gap: 12,
     marginTop: 20
@@ -1160,6 +1969,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0'
   },
+  messageRowActive: {
+    borderColor: '#0f766e',
+    backgroundColor: '#f0fdfa'
+  },
   avatar: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1196,6 +2009,51 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 14,
     lineHeight: 20
+  },
+  inboxPanel: {
+    gap: 12,
+    marginTop: 18,
+    padding: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#dbeafe'
+  },
+  chatBubble: {
+    alignSelf: 'flex-start',
+    maxWidth: '92%',
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9'
+  },
+  chatText: {
+    color: '#0f172a',
+    fontSize: 15,
+    lineHeight: 21
+  },
+  replyBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4
+  },
+  replyInput: {
+    flex: 1,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    color: '#0f172a',
+    backgroundColor: '#f8fafc'
+  },
+  replyButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#0f766e'
   },
   profileHeader: {
     flexDirection: 'row',
