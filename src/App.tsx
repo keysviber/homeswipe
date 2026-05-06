@@ -1,10 +1,13 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
+  ImageStyle,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
+  StyleProp,
   StatusBar,
   StyleSheet,
   Text,
@@ -13,6 +16,22 @@ import {
 } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as ImagePicker from 'expo-image-picker';
+import { Image as CompressorImage } from 'react-native-compressor';
+import { launchImageLibrary } from 'react-native-image-picker';
+import {
+  collection,
+  doc,
+  DocumentData,
+  getDocs,
+  limit as firestoreLimit,
+  onSnapshot,
+  query as firestoreQuery,
+  QueryDocumentSnapshot,
+  setDoc,
+  startAfter,
+  where
+} from 'firebase/firestore';
+import { db, isFirebaseConfigured } from './firebase';
 
 type TabKey = 'home' | 'tools' | 'messages' | 'profile';
 type ListingKind = 'rentals' | 'sales' | 'stands';
@@ -79,6 +98,38 @@ type Conversation = {
   messages: string[];
 };
 
+type ApplicationStatus = 'Submitted' | 'Viewing booked' | 'Docs requested';
+
+type RentalApplication = {
+  id: string;
+  listingId: string;
+  property: string;
+  landlord: string;
+  status: ApplicationStatus;
+  submitted: string;
+  nextStep: string;
+};
+
+type ProfileView = 'overview' | 'saved' | 'applications' | 'rating' | 'personal' | 'documents' | 'searches' | 'payments';
+
+type HomeFilters = {
+  minPrice: string;
+  maxPrice: string;
+  bedrooms: string;
+  bathrooms: string;
+  amenity: string;
+  savedOnly: boolean;
+};
+
+type FirebaseStatus = 'Not configured' | 'Connecting' | 'Synced' | 'Saving' | 'Offline';
+
+type HomeSwipeData = {
+  applications: RentalApplication[];
+  conversations: Conversation[];
+  savedListingIds: string[];
+  savedSearches: string[];
+};
+
 const emptyListingForm: ListingForm = {
   kind: 'rentals',
   propertyType: '',
@@ -123,6 +174,36 @@ const initialConversations: Conversation[] = [
     listingTitle: 'Family home with pool',
     time: 'Mon',
     messages: ['We can share the title deed docs after registration.']
+  }
+];
+
+const initialApplications: RentalApplication[] = [
+  {
+    id: 'application-1',
+    listingId: '1',
+    property: 'Sunny 2 bed apartment',
+    landlord: 'Moyo Properties',
+    status: 'Viewing booked',
+    submitted: 'May 3, 2026',
+    nextStep: 'Attend viewing and confirm proof of income.'
+  },
+  {
+    id: 'application-2',
+    listingId: '2',
+    property: 'Modern garden cottage',
+    landlord: 'Tari Homes',
+    status: 'Docs requested',
+    submitted: 'May 1, 2026',
+    nextStep: 'Upload ID, employment letter, and latest payslip.'
+  },
+  {
+    id: 'application-3',
+    listingId: '4',
+    property: 'Townhouse near schools',
+    landlord: 'Kudu Realty',
+    status: 'Submitted',
+    submitted: 'April 28, 2026',
+    nextStep: 'Waiting for landlord response.'
   }
 ];
 
@@ -262,26 +343,260 @@ const listingFilters: { key: ListingKind; label: string }[] = [
   { key: 'stands', label: 'Stands' }
 ];
 
+const emptyHomeFilters: HomeFilters = {
+  minPrice: '',
+  maxPrice: '',
+  bedrooms: '',
+  bathrooms: '',
+  amenity: '',
+  savedOnly: false
+};
+
+const userDataDocId = 'demo-user';
+const listingsPageSize = 20;
+const compressedImageMaxSize = 1280;
+
+const getNumberFromText = (value: string) => {
+  const match = value.replace(/,/g, '').match(/\d+(\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+};
+
+const getListingSearchText = (listing: Listing) => {
+  return `${listing.title} ${listing.location} ${listing.meta} ${listing.description} ${listing.amenities.join(' ')} ${listing.details.join(' ')}`.toLowerCase();
+};
+
+const compressImageUri = async (uri: string) => {
+  if (Platform.OS === 'web') {
+    return compressImageForWeb(uri, compressedImageMaxSize);
+  }
+
+  return CompressorImage.compress(uri, {
+    compressionMethod: 'auto',
+    maxHeight: compressedImageMaxSize,
+    maxWidth: compressedImageMaxSize,
+    quality: 0.78
+  });
+};
+
+const compressImageForWeb = (uri: string, maxSize: number) => {
+  if (typeof document === 'undefined') {
+    return Promise.resolve(uri);
+  }
+
+  return new Promise<string>((resolve) => {
+    const image = new window.Image();
+    image.onload = () => {
+      const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      const context = canvas.getContext('2d');
+
+      if (!context) {
+        resolve(uri);
+        return;
+      }
+
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.78));
+    };
+    image.onerror = () => resolve(uri);
+    image.src = uri;
+  });
+};
+
+const CachedImage = ({ source, style }: { source: { uri: string }; style: StyleProp<ImageStyle> }) => {
+  return <Image source={{ uri: source.uri, cache: 'force-cache' }} style={style} />;
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   const [activeKind, setActiveKind] = useState<ListingKind>('rentals');
   const [query, setQuery] = useState('');
   const [availableListings, setAvailableListings] = useState<Listing[]>(initialListings);
   const [showListingForm, setShowListingForm] = useState(false);
+  const [showHomeFilters, setShowHomeFilters] = useState(false);
+  const [homeFilters, setHomeFilters] = useState<HomeFilters>(emptyHomeFilters);
   const [listingForm, setListingForm] = useState<ListingForm>(emptyListingForm);
   const [listingStep, setListingStep] = useState(0);
   const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
+  const [savedListingIds, setSavedListingIds] = useState<string[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
   const [activeConversationId, setActiveConversationId] = useState(initialConversations[0].id);
+  const [applications, setApplications] = useState<RentalApplication[]>(initialApplications);
+  const [savedSearches, setSavedSearches] = useState(['Borrowdale gated 2 bed', 'Avondale furnished cottage', 'Ruwa serviced stand']);
+  const [firebaseStatus, setFirebaseStatus] = useState<FirebaseStatus>(isFirebaseConfigured ? 'Connecting' : 'Not configured');
+  const hasLoadedFirebaseData = useRef(!isFirebaseConfigured);
+  const [lastListingDoc, setLastListingDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [isLoadingListings, setIsLoadingListings] = useState(false);
+  const [hasMoreListings, setHasMoreListings] = useState(true);
 
   const filteredListings = useMemo(() => {
     return availableListings.filter((listing) => {
       const matchesKind = listing.kind === activeKind;
-      const searchable = `${listing.title} ${listing.location} ${listing.meta}`.toLowerCase();
+      const searchable = getListingSearchText(listing);
       const matchesQuery = searchable.includes(query.trim().toLowerCase());
-      return matchesKind && matchesQuery;
+      const price = getNumberFromText(listing.price);
+      const minPrice = getNumberFromText(homeFilters.minPrice);
+      const maxPrice = getNumberFromText(homeFilters.maxPrice);
+      const bedrooms = getNumberFromText(homeFilters.bedrooms);
+      const bathrooms = getNumberFromText(homeFilters.bathrooms);
+      const listingBedrooms = getNumberFromText(`${listing.meta} ${listing.details.join(' ')}`.match(/\d+(\.\d+)?\s*(bed|bedroom)/i)?.[0] || '');
+      const listingBathrooms = getNumberFromText(`${listing.meta} ${listing.details.join(' ')}`.match(/\d+(\.\d+)?\s*(bath|bathroom)/i)?.[0] || '');
+      const matchesMinPrice = !minPrice || price >= minPrice;
+      const matchesMaxPrice = !maxPrice || price <= maxPrice;
+      const matchesBedrooms = !bedrooms || listingBedrooms >= bedrooms;
+      const matchesBathrooms = !bathrooms || listingBathrooms >= bathrooms;
+      const matchesAmenity = searchable.includes(homeFilters.amenity.trim().toLowerCase());
+      const matchesSaved = !homeFilters.savedOnly || savedListingIds.includes(listing.id);
+
+      return matchesKind && matchesQuery && matchesMinPrice && matchesMaxPrice && matchesBedrooms && matchesBathrooms && matchesAmenity && matchesSaved;
     });
-  }, [activeKind, availableListings, query]);
+  }, [activeKind, availableListings, homeFilters, query, savedListingIds]);
+
+  const savedListings = useMemo(() => {
+    const knownListings = [...availableListings, ...initialListings].filter(
+      (listing, index, listings) => listings.findIndex((item) => item.id === listing.id) === index
+    );
+    return knownListings.filter((listing) => savedListingIds.includes(listing.id));
+  }, [availableListings, savedListingIds]);
+
+  const activeHomeFilterCount = useMemo(() => {
+    return [
+      homeFilters.minPrice,
+      homeFilters.maxPrice,
+      homeFilters.bedrooms,
+      homeFilters.bathrooms,
+      homeFilters.amenity,
+      homeFilters.savedOnly ? 'saved' : ''
+    ].filter(Boolean).length;
+  }, [homeFilters]);
+
+  useEffect(() => {
+    const firestore = db;
+    if (!firestore) {
+      return;
+    }
+
+    const unsubscribe = onSnapshot(
+      doc(firestore, 'homeswipeUsers', userDataDocId),
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data() as Partial<HomeSwipeData>;
+          setSavedListingIds(data.savedListingIds || []);
+          setConversations(data.conversations?.length ? data.conversations : initialConversations);
+          setApplications(data.applications?.length ? data.applications : initialApplications);
+          setSavedSearches(data.savedSearches?.length ? data.savedSearches : ['Borrowdale gated 2 bed', 'Avondale furnished cottage', 'Ruwa serviced stand']);
+        } else {
+          setDoc(doc(firestore, 'homeswipeUsers', userDataDocId), {
+            applications,
+            conversations,
+            savedListingIds,
+            savedSearches
+          });
+        }
+
+        hasLoadedFirebaseData.current = true;
+        setFirebaseStatus('Synced');
+      },
+      () => {
+        hasLoadedFirebaseData.current = true;
+        setFirebaseStatus('Offline');
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  const loadListingsPage = async (mode: 'reset' | 'more') => {
+    const firestore = db;
+    if (!firestore) {
+      const localListings = initialListings.filter((listing) => listing.kind === activeKind);
+      setAvailableListings(mode === 'reset' ? localListings.slice(0, listingsPageSize) : localListings);
+      setHasMoreListings(localListings.length > listingsPageSize);
+      return;
+    }
+
+    if (isLoadingListings || (mode === 'more' && !hasMoreListings)) {
+      return;
+    }
+
+    setIsLoadingListings(true);
+
+    try {
+      const listingQuery =
+        mode === 'more' && lastListingDoc
+          ? firestoreQuery(
+              collection(firestore, 'homeswipeListings'),
+              where('kind', '==', activeKind),
+              startAfter(lastListingDoc),
+              firestoreLimit(listingsPageSize)
+            )
+          : firestoreQuery(collection(firestore, 'homeswipeListings'), where('kind', '==', activeKind), firestoreLimit(listingsPageSize));
+      const snapshot = await getDocs(listingQuery);
+      const listings = snapshot.docs.map((listingDoc) => listingDoc.data() as Listing);
+
+      if (mode === 'reset' && snapshot.empty) {
+        await Promise.all(
+          initialListings.map((listing, index) =>
+            setDoc(doc(firestore, 'homeswipeListings', listing.id), {
+              ...listing,
+              sortOrder: index
+            })
+          )
+        );
+        const seededListings = initialListings.filter((listing) => listing.kind === activeKind).slice(0, listingsPageSize);
+        setAvailableListings(seededListings);
+        setLastListingDoc(null);
+        setHasMoreListings(false);
+        setFirebaseStatus('Synced');
+        return;
+      }
+
+      setAvailableListings((currentListings) => {
+        const nextListings = mode === 'more' ? [...currentListings, ...listings] : listings;
+        return nextListings.filter((listing, index, allListings) => allListings.findIndex((item) => item.id === listing.id) === index);
+      });
+      setLastListingDoc(snapshot.docs[snapshot.docs.length - 1] || null);
+      setHasMoreListings(snapshot.docs.length === listingsPageSize);
+      setFirebaseStatus('Synced');
+    } catch {
+      const fallbackListings = initialListings.filter((listing) => listing.kind === activeKind);
+      setAvailableListings(mode === 'more' ? fallbackListings : fallbackListings.slice(0, listingsPageSize));
+      setHasMoreListings(fallbackListings.length > listingsPageSize);
+      setFirebaseStatus('Offline');
+    } finally {
+      setIsLoadingListings(false);
+    }
+  };
+
+  useEffect(() => {
+    setSelectedListing(null);
+    setLastListingDoc(null);
+    setHasMoreListings(true);
+    loadListingsPage('reset');
+  }, [activeKind]);
+
+  useEffect(() => {
+    const firestore = db;
+    if (!firestore || !hasLoadedFirebaseData.current) {
+      return;
+    }
+
+    setFirebaseStatus('Saving');
+    setDoc(
+      doc(firestore, 'homeswipeUsers', userDataDocId),
+      {
+        applications,
+        conversations,
+        savedListingIds,
+        savedSearches
+      },
+      { merge: true }
+    )
+      .then(() => setFirebaseStatus('Synced'))
+      .catch(() => setFirebaseStatus('Offline'));
+  }, [applications, conversations, savedListingIds, savedSearches]);
 
   const addListing = () => {
     const title = listingForm.title.trim();
@@ -333,6 +648,9 @@ export default function App() {
     };
 
     setAvailableListings((currentListings) => [newListing, ...currentListings]);
+    if (db) {
+      setDoc(doc(db, 'homeswipeListings', newListing.id), newListing).catch(() => setFirebaseStatus('Offline'));
+    }
     setActiveKind(newListing.kind);
     setListingForm(emptyListingForm);
     setListingStep(0);
@@ -340,6 +658,28 @@ export default function App() {
   };
 
   const pickListingImages = async () => {
+    if (Platform.OS !== 'web') {
+      const result = await launchImageLibrary({
+        mediaType: 'photo',
+        quality: 0.8,
+        selectionLimit: 8
+      });
+
+      if (result.didCancel || !result.assets?.length) {
+        return;
+      }
+
+      const pickedPhotos = result.assets.map((asset) => asset.uri).filter((uri): uri is string => Boolean(uri));
+      const compressedPhotos = await Promise.all(pickedPhotos.map(compressImageUri));
+
+      setListingForm((current) => ({
+        ...current,
+        image: current.image || compressedPhotos[0] || '',
+        localPhotos: [...current.localPhotos, ...compressedPhotos]
+      }));
+      return;
+    }
+
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       return;
@@ -356,22 +696,24 @@ export default function App() {
     }
 
     const pickedPhotos = result.assets.map((asset) => asset.uri);
+    const compressedPhotos = await Promise.all(pickedPhotos.map(compressImageUri));
     setListingForm((current) => ({
       ...current,
-      image: current.image || pickedPhotos[0] || '',
-      localPhotos: [...current.localPhotos, ...pickedPhotos]
+      image: current.image || compressedPhotos[0] || '',
+      localPhotos: [...current.localPhotos, ...compressedPhotos]
     }));
   };
 
-  const addDroppedListingImages = (uris: string[]) => {
+  const addDroppedListingImages = async (uris: string[]) => {
     if (uris.length === 0) {
       return;
     }
 
+    const compressedPhotos = await Promise.all(uris.map(compressImageUri));
     setListingForm((current) => ({
       ...current,
-      image: current.image || uris[0],
-      localPhotos: [...current.localPhotos, ...uris]
+      image: current.image || compressedPhotos[0],
+      localPhotos: [...current.localPhotos, ...compressedPhotos]
     }));
   };
 
@@ -409,6 +751,55 @@ export default function App() {
     openListingConversation(listing, `Viewing request for ${listing.title}: ${date} at ${time}.`);
   };
 
+  const toggleSavedListing = (listingId: string) => {
+    setSavedListingIds((currentIds) =>
+      currentIds.includes(listingId) ? currentIds.filter((id) => id !== listingId) : [...currentIds, listingId]
+    );
+  };
+
+  const shareListing = async (listing: Listing) => {
+    await Share.share({
+      title: listing.title,
+      message: `${listing.title} in ${listing.location} for ${listing.price}. Contact ${listing.host} on HomeSwipe.`
+    });
+  };
+
+  const sendMessage = (conversationId: string, message: string) => {
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) {
+      return;
+    }
+
+    setConversations((currentConversations) =>
+      currentConversations.map((conversation) =>
+        conversation.id === conversationId
+          ? { ...conversation, time: 'Now', messages: [...conversation.messages, trimmedMessage] }
+          : conversation
+      )
+    );
+  };
+
+  const openListingFromProfile = (listing: Listing) => {
+    setSelectedListing(listing);
+    setActiveKind(listing.kind);
+    setActiveTab('home');
+  };
+
+  const saveCurrentSearch = (search: string) => {
+    const trimmedSearch = search.trim();
+    if (!trimmedSearch) {
+      return;
+    }
+
+    setSavedSearches((currentSearches) =>
+      currentSearches.includes(trimmedSearch) ? currentSearches : [trimmedSearch, ...currentSearches]
+    );
+  };
+
+  const removeSavedSearch = (search: string) => {
+    setSavedSearches((currentSearches) => currentSearches.filter((savedSearch) => savedSearch !== search));
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" />
@@ -416,22 +807,34 @@ export default function App() {
         {activeTab === 'home' && (
           <HomeScreen
             activeKind={activeKind}
+            activeHomeFilterCount={activeHomeFilterCount}
+            firebaseStatus={firebaseStatus}
             filteredListings={filteredListings}
+            hasMoreListings={hasMoreListings}
+            homeFilters={homeFilters}
+            isLoadingListings={isLoadingListings}
             query={query}
             listingForm={listingForm}
             showListingForm={showListingForm}
+            showHomeFilters={showHomeFilters}
             addListing={addListing}
             listingStep={listingStep}
             selectedListing={selectedListing}
+            savedListingIds={savedListingIds}
             onMessageListing={openListingConversation}
             onPickListingImages={pickListingImages}
             onRequestViewing={requestViewing}
             onDropListingImages={addDroppedListingImages}
+            onLoadMoreListings={() => loadListingsPage('more')}
+            onShareListing={shareListing}
+            onToggleSavedListing={toggleSavedListing}
             setActiveKind={setActiveKind}
+            setHomeFilters={setHomeFilters}
             setListingForm={setListingForm}
             setListingStep={setListingStep}
             setQuery={setQuery}
             setSelectedListing={setSelectedListing}
+            setShowHomeFilters={setShowHomeFilters}
             setShowListingForm={setShowListingForm}
           />
         )}
@@ -440,10 +843,24 @@ export default function App() {
           <MessagesScreen
             activeConversationId={activeConversationId}
             conversations={conversations}
+            onSendMessage={sendMessage}
             setActiveConversationId={setActiveConversationId}
           />
         )}
-        {activeTab === 'profile' && <ProfileScreen />}
+        {activeTab === 'profile' && (
+          <ProfileScreen
+            applications={applications}
+            listings={availableListings}
+            currentSearch={query}
+            savedListings={savedListings}
+            savedSearches={savedSearches}
+            onMessageListing={openListingConversation}
+            onOpenListing={openListingFromProfile}
+            onRemoveSavedSearch={removeSavedSearch}
+            onSaveCurrentSearch={saveCurrentSearch}
+            onToggleSavedListing={toggleSavedListing}
+          />
+        )}
       </View>
       <View style={styles.bottomTabs}>
         {tabs.map((tab) => {
@@ -468,41 +885,65 @@ export default function App() {
 
 function HomeScreen({
   activeKind,
+  activeHomeFilterCount,
+  firebaseStatus,
   filteredListings,
+  hasMoreListings,
+  homeFilters,
+  isLoadingListings,
   listingForm,
   query,
+  showHomeFilters,
   showListingForm,
   addListing,
   listingStep,
   selectedListing,
+  savedListingIds,
   onMessageListing,
   onPickListingImages,
   onRequestViewing,
   onDropListingImages,
+  onLoadMoreListings,
+  onShareListing,
+  onToggleSavedListing,
   setActiveKind,
+  setHomeFilters,
   setListingForm,
   setListingStep,
   setQuery,
   setSelectedListing,
+  setShowHomeFilters,
   setShowListingForm
 }: {
   activeKind: ListingKind;
+  activeHomeFilterCount: number;
+  firebaseStatus: FirebaseStatus;
   filteredListings: Listing[];
+  hasMoreListings: boolean;
+  homeFilters: HomeFilters;
+  isLoadingListings: boolean;
   listingForm: ListingForm;
   query: string;
+  showHomeFilters: boolean;
   showListingForm: boolean;
   addListing: () => void;
   listingStep: number;
   selectedListing: Listing | null;
+  savedListingIds: string[];
   onMessageListing: (listing: Listing) => void;
   onPickListingImages: () => void;
   onRequestViewing: (listing: Listing, date: string, time: string) => void;
   onDropListingImages: (uris: string[]) => void;
+  onLoadMoreListings: () => void;
+  onShareListing: (listing: Listing) => void;
+  onToggleSavedListing: (listingId: string) => void;
   setActiveKind: (kind: ListingKind) => void;
+  setHomeFilters: React.Dispatch<React.SetStateAction<HomeFilters>>;
   setListingForm: React.Dispatch<React.SetStateAction<ListingForm>>;
   setListingStep: (step: number) => void;
   setQuery: (value: string) => void;
   setSelectedListing: (listing: Listing | null) => void;
+  setShowHomeFilters: (value: boolean) => void;
   setShowListingForm: (value: boolean) => void;
 }) {
   if (selectedListing) {
@@ -510,18 +951,41 @@ function HomeScreen({
       <ListingDetails
         listing={selectedListing}
         onBack={() => setSelectedListing(null)}
+        isSaved={savedListingIds.includes(selectedListing.id)}
         onMessage={() => onMessageListing(selectedListing)}
         onRequestViewing={(date, time) => onRequestViewing(selectedListing, date, time)}
+        onShare={() => onShareListing(selectedListing)}
+        onToggleSaved={() => onToggleSavedListing(selectedListing.id)}
       />
     );
   }
 
+  const loadMoreWhenNearBottom = ({ nativeEvent }: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+    const distanceFromBottom = nativeEvent.contentSize.height - nativeEvent.layoutMeasurement.height - nativeEvent.contentOffset.y;
+    if (distanceFromBottom < 240 && hasMoreListings && !isLoadingListings) {
+      onLoadMoreListings();
+    }
+  };
+
   return (
-    <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      onScroll={loadMoreWhenNearBottom}
+      scrollEventThrottle={400}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.header}>
         <View>
           <Text style={styles.brand}>HomeSwipe</Text>
           <Text style={styles.subtitle}>Find rentals, homes, and stands without the runaround.</Text>
+          <View style={styles.syncBadge}>
+            <Ionicons
+              name={firebaseStatus === 'Synced' ? 'cloud-done-outline' : firebaseStatus === 'Saving' ? 'cloud-upload-outline' : 'cloud-offline-outline'}
+              size={16}
+              color={firebaseStatus === 'Offline' ? '#b91c1c' : '#0f766e'}
+            />
+            <Text style={styles.syncBadgeText}>{firebaseStatus === 'Not configured' ? 'Firebase not configured' : `Firebase: ${firebaseStatus}`}</Text>
+          </View>
         </View>
         <Pressable
           style={styles.addHomeButton}
@@ -619,7 +1083,7 @@ function HomeScreen({
                 <View style={styles.uploadPreviewGrid}>
                   {listingForm.localPhotos.map((photo) => (
                     <View key={photo} style={styles.uploadPreviewItem}>
-                      <Image source={{ uri: photo }} style={styles.uploadPreviewImage} />
+                      <CachedImage source={{ uri: photo }} style={styles.uploadPreviewImage} />
                       <Pressable
                         accessibilityLabel="Remove photo"
                         style={styles.removePhotoButton}
@@ -689,10 +1153,86 @@ function HomeScreen({
           onChangeText={setQuery}
           style={styles.searchInput}
         />
-        <Pressable style={styles.filterButton} accessibilityLabel="Open filters">
+        {query.length > 0 && (
+          <Pressable style={styles.clearSearchButton} accessibilityLabel="Clear search" onPress={() => setQuery('')}>
+            <Ionicons name="close-outline" size={18} color="#64748b" />
+          </Pressable>
+        )}
+        <Pressable style={styles.filterButton} accessibilityLabel="Open listing filters" onPress={() => setShowHomeFilters(!showHomeFilters)}>
           <Ionicons name="options-outline" size={20} color="#ffffff" />
+          {activeHomeFilterCount > 0 && (
+            <View style={styles.filterCountBadge}>
+              <Text style={styles.filterCountText}>{activeHomeFilterCount}</Text>
+            </View>
+          )}
         </Pressable>
       </View>
+
+      {showHomeFilters && (
+        <View style={styles.filterPanel}>
+          <View style={styles.panelHeader}>
+            <View>
+              <Text style={styles.formTitle}>Search filters</Text>
+              <Text style={styles.panelHint}>Narrow homes by budget, rooms, amenities, or saved homes.</Text>
+            </View>
+            <Ionicons name="options-outline" size={26} color="#0f766e" />
+          </View>
+          <View style={styles.formGrid}>
+            <TextInput
+              keyboardType="numeric"
+              onChangeText={(minPrice) => setHomeFilters((current) => ({ ...current, minPrice }))}
+              placeholder="Min price"
+              placeholderTextColor="#94a3b8"
+              style={styles.formInput}
+              value={homeFilters.minPrice}
+            />
+            <TextInput
+              keyboardType="numeric"
+              onChangeText={(maxPrice) => setHomeFilters((current) => ({ ...current, maxPrice }))}
+              placeholder="Max price"
+              placeholderTextColor="#94a3b8"
+              style={styles.formInput}
+              value={homeFilters.maxPrice}
+            />
+            <TextInput
+              keyboardType="numeric"
+              onChangeText={(bedrooms) => setHomeFilters((current) => ({ ...current, bedrooms }))}
+              placeholder="Bedrooms"
+              placeholderTextColor="#94a3b8"
+              style={styles.formInput}
+              value={homeFilters.bedrooms}
+            />
+            <TextInput
+              keyboardType="numeric"
+              onChangeText={(bathrooms) => setHomeFilters((current) => ({ ...current, bathrooms }))}
+              placeholder="Bathrooms"
+              placeholderTextColor="#94a3b8"
+              style={styles.formInput}
+              value={homeFilters.bathrooms}
+            />
+          </View>
+          <TextInput
+            onChangeText={(amenity) => setHomeFilters((current) => ({ ...current, amenity }))}
+            placeholder="Amenity or feature, e.g. solar, gated, borehole"
+            placeholderTextColor="#94a3b8"
+            style={styles.formInput}
+            value={homeFilters.amenity}
+          />
+          <View style={styles.formNavRow}>
+            <Pressable
+              style={[styles.signatureButton, homeFilters.savedOnly && styles.signatureButtonDone]}
+              onPress={() => setHomeFilters((current) => ({ ...current, savedOnly: !current.savedOnly }))}
+            >
+              <Ionicons name={homeFilters.savedOnly ? 'heart' : 'heart-outline'} size={18} color={homeFilters.savedOnly ? '#ffffff' : '#0f766e'} />
+              <Text style={[styles.signatureText, homeFilters.savedOnly && styles.signatureTextDone]}>Saved only</Text>
+            </Pressable>
+            <Pressable style={styles.secondaryButton} onPress={() => setHomeFilters(emptyHomeFilters)}>
+              <Ionicons name="refresh-outline" size={18} color="#0f766e" />
+              <Text style={styles.secondaryButtonText}>Reset filters</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
 
       <View style={styles.segmentedControl}>
         {listingFilters.map((filter) => {
@@ -716,31 +1256,59 @@ function HomeScreen({
 
       <View style={styles.listGrid}>
         {filteredListings.map((listing) => (
-          <ListingCard key={listing.id} listing={listing} onPress={() => setSelectedListing(listing)} />
+          <ListingCard
+            key={listing.id}
+            isSaved={savedListingIds.includes(listing.id)}
+            listing={listing}
+            onPress={() => setSelectedListing(listing)}
+            onToggleSaved={() => onToggleSavedListing(listing.id)}
+          />
         ))}
       </View>
+      {hasMoreListings && (
+        <Pressable style={styles.loadMoreButton} onPress={onLoadMoreListings}>
+          <Ionicons name="download-outline" size={18} color="#0f766e" />
+          <Text style={styles.secondaryButtonText}>{isLoadingListings ? 'Loading homes...' : 'Load more homes'}</Text>
+        </Pressable>
+      )}
     </ScrollView>
   );
 }
 
-function ListingCard({ listing, onPress }: { listing: Listing; onPress: () => void }) {
+function ListingCard({
+  isSaved,
+  listing,
+  onPress,
+  onToggleSaved
+}: {
+  isSaved: boolean;
+  listing: Listing;
+  onPress: () => void;
+  onToggleSaved: () => void;
+}) {
   return (
-    <Pressable style={styles.listingCard} onPress={onPress}>
-      <Image source={{ uri: listing.image }} style={styles.listingImage} />
+    <View style={styles.listingCard}>
+      <Pressable onPress={onPress}>
+        <CachedImage source={{ uri: listing.image }} style={styles.listingImage} />
+      </Pressable>
       <View style={styles.cardBody}>
         <View style={styles.cardTopline}>
           <Text style={styles.listingTag}>{listing.tag}</Text>
-          <Ionicons name="heart-outline" size={22} color="#0f172a" />
+          <Pressable accessibilityLabel={isSaved ? 'Unsave listing' : 'Save listing'} onPress={onToggleSaved} hitSlop={8}>
+            <Ionicons name={isSaved ? 'heart' : 'heart-outline'} size={22} color={isSaved ? '#e11d48' : '#0f172a'} />
+          </Pressable>
         </View>
-        <Text style={styles.listingTitle}>{listing.title}</Text>
-        <Text style={styles.listingLocation}>{listing.location}</Text>
-        <Text style={styles.listingMeta}>{listing.meta}</Text>
-        <View style={styles.cardFooter}>
-          <Text style={styles.listingPrice}>{listing.price}</Text>
-          <Text style={styles.hostName}>{listing.host}</Text>
-        </View>
+        <Pressable onPress={onPress}>
+          <Text style={styles.listingTitle}>{listing.title}</Text>
+          <Text style={styles.listingLocation}>{listing.location}</Text>
+          <Text style={styles.listingMeta}>{listing.meta}</Text>
+          <View style={styles.cardFooter}>
+            <Text style={styles.listingPrice}>{listing.price}</Text>
+            <Text style={styles.hostName}>{listing.host}</Text>
+          </View>
+        </Pressable>
       </View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -791,15 +1359,21 @@ function ImageDropZone({
 }
 
 function ListingDetails({
+  isSaved,
   listing,
   onBack,
   onMessage,
-  onRequestViewing
+  onRequestViewing,
+  onShare,
+  onToggleSaved
 }: {
+  isSaved: boolean;
   listing: Listing;
   onBack: () => void;
   onMessage: () => void;
   onRequestViewing: (date: string, time: string) => void;
+  onShare: () => void;
+  onToggleSaved: () => void;
 }) {
   const galleryPhotos = listing.photos.length > 0 ? listing.photos : [listing.image];
   const [showCalendar, setShowCalendar] = useState(false);
@@ -815,20 +1389,20 @@ function ListingDetails({
           <Ionicons name="chevron-back-outline" size={22} color="#0f172a" />
         </Pressable>
         <View style={styles.detailHeaderActions}>
-          <Pressable style={styles.iconButton} accessibilityLabel="Share listing">
+          <Pressable style={styles.iconButton} accessibilityLabel="Share listing" onPress={onShare}>
             <Ionicons name="share-outline" size={20} color="#0f172a" />
           </Pressable>
-          <Pressable style={styles.iconButton} accessibilityLabel="Save listing">
-            <Ionicons name="heart-outline" size={20} color="#0f172a" />
+          <Pressable style={styles.iconButton} accessibilityLabel={isSaved ? 'Unsave listing' : 'Save listing'} onPress={onToggleSaved}>
+            <Ionicons name={isSaved ? 'heart' : 'heart-outline'} size={20} color={isSaved ? '#e11d48' : '#0f172a'} />
           </Pressable>
         </View>
       </View>
 
       <View style={styles.photoGallery}>
-        <Image source={{ uri: galleryPhotos[0] }} style={styles.heroPhoto} />
+        <CachedImage source={{ uri: galleryPhotos[0] }} style={styles.heroPhoto} />
         <View style={styles.thumbnailGrid}>
           {galleryPhotos.slice(1, 5).map((photo) => (
-            <Image key={photo} source={{ uri: photo }} style={styles.thumbnailPhoto} />
+            <CachedImage key={photo} source={{ uri: photo }} style={styles.thumbnailPhoto} />
           ))}
         </View>
       </View>
@@ -1001,7 +1575,8 @@ function ToolsScreen() {
         }
 
         const nextLease = { ...lease, ...update };
-        const status = nextLease.landlordSigned && nextLease.tenantSigned ? 'Completed' : nextLease.status;
+        const signaturesComplete = nextLease.landlordSigned && nextLease.tenantSigned;
+        const status = signaturesComplete ? 'Completed' : nextLease.status === 'Completed' ? 'Sent for signing' : nextLease.status;
         return { ...nextLease, status };
       })
     );
@@ -1173,13 +1748,25 @@ function LeaseInput({
 function MessagesScreen({
   activeConversationId,
   conversations,
+  onSendMessage,
   setActiveConversationId
 }: {
   activeConversationId: string;
   conversations: Conversation[];
+  onSendMessage: (conversationId: string, message: string) => void;
   setActiveConversationId: (id: string) => void;
 }) {
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) || conversations[0];
+  const [replyText, setReplyText] = useState('');
+
+  const sendReply = () => {
+    if (!activeConversation) {
+      return;
+    }
+
+    onSendMessage(activeConversation.id, replyText);
+    setReplyText('');
+  };
 
   return (
     <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
@@ -1225,8 +1812,16 @@ function MessagesScreen({
             </View>
           ))}
           <View style={styles.replyBar}>
-            <TextInput placeholder="Write a reply" placeholderTextColor="#94a3b8" style={styles.replyInput} />
-            <Pressable style={styles.replyButton} accessibilityLabel="Send reply">
+            <TextInput
+              onChangeText={setReplyText}
+              onSubmitEditing={sendReply}
+              placeholder="Write a reply"
+              placeholderTextColor="#94a3b8"
+              returnKeyType="send"
+              style={styles.replyInput}
+              value={replyText}
+            />
+            <Pressable style={styles.replyButton} accessibilityLabel="Send reply" onPress={sendReply}>
               <Ionicons name="send-outline" size={20} color="#ffffff" />
             </Pressable>
           </View>
@@ -1236,46 +1831,272 @@ function MessagesScreen({
   );
 }
 
-function ProfileScreen() {
+function ProfileScreen({
+  applications,
+  currentSearch,
+  listings,
+  savedListings,
+  savedSearches,
+  onMessageListing,
+  onOpenListing,
+  onRemoveSavedSearch,
+  onSaveCurrentSearch,
+  onToggleSavedListing
+}: {
+  applications: RentalApplication[];
+  currentSearch: string;
+  listings: Listing[];
+  savedListings: Listing[];
+  savedSearches: string[];
+  onMessageListing: (listing: Listing) => void;
+  onOpenListing: (listing: Listing) => void;
+  onRemoveSavedSearch: (search: string) => void;
+  onSaveCurrentSearch: (search: string) => void;
+  onToggleSavedListing: (listingId: string) => void;
+}) {
+  const [profileView, setProfileView] = useState<ProfileView>('overview');
+  const [personalInfo, setPersonalInfo] = useState({
+    fullName: 'Tendai Ndlovu',
+    phone: '+263 77 123 4567',
+    email: 'tendai.ndlovu@example.com',
+    employer: 'Avondale Medical Centre',
+    monthlyBudget: '$900/mo'
+  });
+  const [documents, setDocuments] = useState([
+    { id: 'national-id', title: 'National ID', status: 'Verified' },
+    { id: 'proof-income', title: 'Proof of income', status: 'Needs update' },
+    { id: 'references', title: 'Landlord references', status: 'Ready' }
+  ]);
+  const [paymentPreferences, setPaymentPreferences] = useState({
+    method: 'EcoCash',
+    autopay: true,
+    receipts: true
+  });
+
+  const activeTitle =
+    profileView === 'overview'
+      ? 'Profile'
+      : profileView === 'saved'
+        ? 'Saved homes'
+        : profileView === 'applications'
+          ? 'Applications'
+          : profileView === 'rating'
+            ? 'Tenant rating'
+            : profileView === 'personal'
+              ? 'Personal information'
+              : profileView === 'documents'
+                ? 'Verification documents'
+                : profileView === 'searches'
+                  ? 'Saved searches'
+                  : 'Payment preferences';
+
+  const getListingForApplication = (application: RentalApplication) => {
+    return listings.find((listing) => listing.id === application.listingId);
+  };
+
+  const markDocumentReady = (id: string) => {
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) => (document.id === id ? { ...document, status: 'Ready' } : document))
+    );
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
+      {profileView !== 'overview' && (
+        <Pressable style={styles.profileBackButton} onPress={() => setProfileView('overview')}>
+          <Ionicons name="chevron-back-outline" size={20} color="#0f766e" />
+          <Text style={styles.secondaryButtonText}>Profile</Text>
+        </Pressable>
+      )}
+
       <View style={styles.profileHeader}>
-        <Image
+        <CachedImage
           source={{ uri: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=600&q=80' }}
           style={styles.profileImage}
         />
         <View style={styles.profileCopy}>
-          <Text style={styles.profileName}>Tendai Ndlovu</Text>
+          <Text style={styles.profileName}>{activeTitle}</Text>
           <Text style={styles.profileRole}>Tenant · verified profile</Text>
         </View>
-        <Pressable style={styles.iconButton} accessibilityLabel="Edit profile">
+        <Pressable style={styles.iconButton} accessibilityLabel="Edit profile" onPress={() => setProfileView('personal')}>
           <Ionicons name="pencil-outline" size={20} color="#0f172a" />
         </Pressable>
       </View>
 
-      <View style={styles.profileStats}>
-        <View style={styles.statBlock}>
-          <Text style={styles.statValue}>8</Text>
-          <Text style={styles.statLabel}>Saved</Text>
-        </View>
-        <View style={styles.statBlock}>
-          <Text style={styles.statValue}>3</Text>
-          <Text style={styles.statLabel}>Applications</Text>
-        </View>
-        <View style={styles.statBlock}>
-          <Text style={styles.statValue}>4.8</Text>
-          <Text style={styles.statLabel}>Rating</Text>
-        </View>
-      </View>
+      {profileView === 'overview' && (
+        <>
+          <View style={styles.profileStats}>
+            <Pressable style={styles.statBlock} onPress={() => setProfileView('saved')}>
+              <Text style={styles.statValue}>{savedListings.length}</Text>
+              <Text style={styles.statLabel}>Saved</Text>
+            </Pressable>
+            <Pressable style={styles.statBlock} onPress={() => setProfileView('applications')}>
+              <Text style={styles.statValue}>{applications.length}</Text>
+              <Text style={styles.statLabel}>Applications</Text>
+            </Pressable>
+            <Pressable style={styles.statBlock} onPress={() => setProfileView('rating')}>
+              <Text style={styles.statValue}>4.8</Text>
+              <Text style={styles.statLabel}>Rating</Text>
+            </Pressable>
+          </View>
 
-      <View style={styles.settingsList}>
-        {['Personal information', 'Verification documents', 'Saved searches', 'Payment preferences'].map((item) => (
-          <Pressable key={item} style={styles.settingRow}>
-            <Text style={styles.settingText}>{item}</Text>
-            <Ionicons name="chevron-forward-outline" size={22} color="#94a3b8" />
+          <View style={styles.settingsList}>
+            {[
+              { key: 'personal' as const, label: 'Personal information' },
+              { key: 'documents' as const, label: 'Verification documents' },
+              { key: 'searches' as const, label: 'Saved searches' },
+              { key: 'payments' as const, label: 'Payment preferences' }
+            ].map((item) => (
+              <Pressable key={item.key} style={styles.settingRow} onPress={() => setProfileView(item.key)}>
+                <Text style={styles.settingText}>{item.label}</Text>
+                <Ionicons name="chevron-forward-outline" size={22} color="#94a3b8" />
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
+
+      {profileView === 'saved' && (
+        <View style={styles.profileSection}>
+          {savedListings.length === 0 ? (
+            <View style={styles.emptyPanel}>
+              <Ionicons name="heart-outline" size={30} color="#0f766e" />
+              <Text style={styles.formTitle}>No saved homes yet</Text>
+              <Text style={styles.panelHint}>Tap the heart on any listing to keep it here.</Text>
+            </View>
+          ) : (
+            <View style={styles.listGrid}>
+              {savedListings.map((listing) => (
+                <ListingCard
+                  key={listing.id}
+                  isSaved
+                  listing={listing}
+                  onPress={() => onOpenListing(listing)}
+                  onToggleSaved={() => onToggleSavedListing(listing.id)}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+
+      {profileView === 'applications' && (
+        <View style={styles.profileSection}>
+          {applications.map((application) => {
+            const listing = getListingForApplication(application);
+            return (
+              <View key={application.id} style={styles.applicationCard}>
+                <View style={styles.cardTopline}>
+                  <Text style={styles.listingTag}>{application.status}</Text>
+                  <Text style={styles.messageTime}>{application.submitted}</Text>
+                </View>
+                <Text style={styles.leaseTitle}>{application.property}</Text>
+                <Text style={styles.messageText}>{application.nextStep}</Text>
+                <View style={styles.profileActionRow}>
+                  {listing && (
+                    <Pressable style={styles.secondaryButton} onPress={() => onOpenListing(listing)}>
+                      <Ionicons name="home-outline" size={18} color="#0f766e" />
+                      <Text style={styles.secondaryButtonText}>View home</Text>
+                    </Pressable>
+                  )}
+                  {listing && (
+                    <Pressable style={styles.primaryButton} onPress={() => onMessageListing(listing)}>
+                      <Ionicons name="chatbubble-outline" size={18} color="#ffffff" />
+                      <Text style={styles.primaryButtonText}>Message</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {profileView === 'rating' && (
+        <View style={styles.profileSection}>
+          <View style={styles.formPanel}>
+            <Text style={styles.statValue}>4.8</Text>
+            <Text style={styles.detailDescription}>Based on landlord feedback, payment history, document readiness, and viewing attendance.</Text>
+            {['Rent paid on time', 'Documents verified', 'Strong landlord reference', 'Viewing attendance confirmed'].map((item) => (
+              <View key={item} style={styles.checkRow}>
+                <Ionicons name="star" size={20} color="#f59e0b" />
+                <Text style={styles.checkText}>{item}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {profileView === 'personal' && (
+        <View style={styles.formPanel}>
+          <LeaseInput label="Full name" value={personalInfo.fullName} onChangeText={(fullName) => setPersonalInfo((current) => ({ ...current, fullName }))} />
+          <LeaseInput label="Phone" value={personalInfo.phone} onChangeText={(phone) => setPersonalInfo((current) => ({ ...current, phone }))} />
+          <LeaseInput label="Email" value={personalInfo.email} onChangeText={(email) => setPersonalInfo((current) => ({ ...current, email }))} />
+          <LeaseInput label="Employer" value={personalInfo.employer} onChangeText={(employer) => setPersonalInfo((current) => ({ ...current, employer }))} />
+          <LeaseInput label="Monthly budget" value={personalInfo.monthlyBudget} onChangeText={(monthlyBudget) => setPersonalInfo((current) => ({ ...current, monthlyBudget }))} />
+        </View>
+      )}
+
+      {profileView === 'documents' && (
+        <View style={styles.profileSection}>
+          {documents.map((document) => (
+            <View key={document.id} style={styles.documentRow}>
+              <View style={styles.toolIcon}>
+                <Ionicons name="document-attach-outline" size={22} color="#0f766e" />
+              </View>
+              <View style={styles.messageCopy}>
+                <Text style={styles.messageName}>{document.title}</Text>
+                <Text style={styles.messageText}>{document.status}</Text>
+              </View>
+              <Pressable style={styles.secondaryButton} onPress={() => markDocumentReady(document.id)}>
+                <Text style={styles.secondaryButtonText}>Mark ready</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {profileView === 'searches' && (
+        <View style={styles.profileSection}>
+          <Pressable style={styles.primaryButton} onPress={() => onSaveCurrentSearch(currentSearch)}>
+            <Ionicons name="bookmark-outline" size={18} color="#ffffff" />
+            <Text style={styles.primaryButtonText}>Save current search</Text>
           </Pressable>
-        ))}
-      </View>
+          {savedSearches.map((search) => (
+            <View key={search} style={styles.savedSearchRow}>
+              <Ionicons name="search-outline" size={20} color="#0f766e" />
+              <Text style={styles.settingText}>{search}</Text>
+              <Pressable accessibilityLabel="Remove saved search" onPress={() => onRemoveSavedSearch(search)}>
+                <Ionicons name="close-circle-outline" size={22} color="#64748b" />
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {profileView === 'payments' && (
+        <View style={styles.formPanel}>
+          <LeaseInput
+            label="Preferred payment method"
+            value={paymentPreferences.method}
+            onChangeText={(method) => setPaymentPreferences((current) => ({ ...current, method }))}
+          />
+          <Pressable
+            style={styles.settingRow}
+            onPress={() => setPaymentPreferences((current) => ({ ...current, autopay: !current.autopay }))}
+          >
+            <Text style={styles.settingText}>Automatic rent reminders</Text>
+            <Ionicons name={paymentPreferences.autopay ? 'toggle' : 'toggle-outline'} size={30} color="#0f766e" />
+          </Pressable>
+          <Pressable
+            style={styles.settingRow}
+            onPress={() => setPaymentPreferences((current) => ({ ...current, receipts: !current.receipts }))}
+          >
+            <Text style={styles.settingText}>Email receipts</Text>
+            <Ionicons name={paymentPreferences.receipts ? 'toggle' : 'toggle-outline'} size={30} color="#0f766e" />
+          </Pressable>
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -1396,6 +2217,24 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '900'
   },
+  syncBadge: {
+    alignSelf: 'flex-start',
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    marginTop: 10,
+    borderRadius: 8,
+    backgroundColor: '#ecfeff',
+    borderWidth: 1,
+    borderColor: '#99f6e4'
+  },
+  syncBadgeText: {
+    color: '#0f766e',
+    fontSize: 12,
+    fontWeight: '800'
+  },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1413,13 +2252,50 @@ const styles = StyleSheet.create({
     fontSize: 16,
     minHeight: 38
   },
+  clearSearchButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9'
+  },
   filterButton: {
+    position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
     width: 38,
     height: 38,
     borderRadius: 8,
     backgroundColor: '#0f766e'
+  },
+  filterCountBadge: {
+    position: 'absolute',
+    top: -7,
+    right: -7,
+    minWidth: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+    borderRadius: 10,
+    backgroundColor: '#e11d48',
+    borderWidth: 2,
+    borderColor: '#ffffff'
+  },
+  filterCountText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '900'
+  },
+  filterPanel: {
+    gap: 12,
+    padding: 16,
+    marginBottom: 18,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#dbeafe'
   },
   segmentedControl: {
     flexDirection: 'row',
@@ -1465,6 +2341,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 16
+  },
+  loadMoreButton: {
+    alignSelf: 'center',
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    marginTop: 18,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#99f6e4',
+    backgroundColor: '#f0fdfa'
   },
   listingCard: {
     backgroundColor: '#ffffff',
@@ -1945,6 +2835,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 7,
+    paddingHorizontal: 14,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#99f6e4',
@@ -2055,6 +2946,14 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: '#0f766e'
   },
+  profileBackButton: {
+    alignSelf: 'flex-start',
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 12
+  },
   profileHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2122,9 +3021,56 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e2e8f0'
   },
   settingText: {
+    flex: 1,
     color: '#0f172a',
     fontSize: 16,
     fontWeight: '700'
+  },
+  profileSection: {
+    gap: 12
+  },
+  emptyPanel: {
+    alignItems: 'center',
+    gap: 8,
+    padding: 24,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  applicationCard: {
+    gap: 12,
+    padding: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  profileActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  documentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  savedSearchRow: {
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
   },
   bottomTabs: {
     position: 'absolute',
