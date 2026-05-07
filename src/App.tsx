@@ -50,6 +50,20 @@ type Listing = {
   description: string;
   amenities: string[];
   details: string[];
+  propertyType?: string;
+  spaceType?: string;
+  streetAddress?: string;
+  area?: string;
+  city?: string;
+  mapPin?: string;
+  features?: string[];
+  rules?: string[];
+  standSize?: string;
+  standServicing?: string;
+  standTitle?: string;
+  standRoadAccess?: string;
+  standZoning?: string;
+  ownerId?: string;
 };
 
 type ListingForm = {
@@ -58,6 +72,9 @@ type ListingForm = {
   spaceType: string;
   title: string;
   location: string;
+  area: string;
+  city: string;
+  mapPin: string;
   price: string;
   meta: string;
   host: string;
@@ -66,10 +83,17 @@ type ListingForm = {
   localPhotos: string[];
   description: string;
   amenities: string;
+  features: string[];
   guests: string;
   bedrooms: string;
   bathrooms: string;
-  houseRules: string;
+  standSize: string;
+  standServicing: string;
+  standTitle: string;
+  standRoadAccess: string;
+  standZoning: string;
+  houseRuleDraft: string;
+  houseRules: string[];
 };
 
 type LeaseDraft = {
@@ -110,7 +134,7 @@ type RentalApplication = {
   nextStep: string;
 };
 
-type ProfileView = 'overview' | 'saved' | 'applications' | 'rating' | 'personal' | 'documents' | 'searches' | 'payments';
+type ProfileView = 'overview' | 'landlordListings' | 'saved' | 'applications' | 'rating' | 'personal' | 'documents' | 'searches' | 'payments';
 
 type HomeFilters = {
   minPrice: string;
@@ -136,6 +160,9 @@ const emptyListingForm: ListingForm = {
   spaceType: '',
   title: '',
   location: '',
+  area: '',
+  city: '',
+  mapPin: '',
   price: '',
   meta: '',
   host: '',
@@ -144,10 +171,17 @@ const emptyListingForm: ListingForm = {
   localPhotos: [],
   description: '',
   amenities: '',
+  features: [],
   guests: '',
   bedrooms: '',
   bathrooms: '',
-  houseRules: ''
+  standSize: '',
+  standServicing: '',
+  standTitle: '',
+  standRoadAccess: '',
+  standZoning: '',
+  houseRuleDraft: '',
+  houseRules: []
 };
 
 const initialConversations: Conversation[] = [
@@ -343,6 +377,15 @@ const listingFilters: { key: ListingKind; label: string }[] = [
   { key: 'stands', label: 'Stands' }
 ];
 
+const userDataDocId = 'demo-user';
+
+const currentLandlordProfile = {
+  id: userDataDocId,
+  displayName: 'Tendai Ndlovu'
+};
+
+const listingFeatureOptions = ['Gated', 'Solar backup', 'Borehole', 'Parking', 'Furnished', 'Wi-Fi ready'];
+
 const emptyHomeFilters: HomeFilters = {
   minPrice: '',
   maxPrice: '',
@@ -352,7 +395,6 @@ const emptyHomeFilters: HomeFilters = {
   savedOnly: false
 };
 
-const userDataDocId = 'demo-user';
 const listingsPageSize = 20;
 const compressedImageMaxSize = 1280;
 
@@ -363,6 +405,25 @@ const getNumberFromText = (value: string) => {
 
 const getListingSearchText = (listing: Listing) => {
   return `${listing.title} ${listing.location} ${listing.meta} ${listing.description} ${listing.amenities.join(' ')} ${listing.details.join(' ')}`.toLowerCase();
+};
+
+const uniqueListings = (listings: Listing[]) => {
+  return listings.filter((listing, index, allListings) => allListings.findIndex((item) => item.id === listing.id) === index);
+};
+
+const getListingFormSummary = (form: ListingForm) => {
+  const roomDetails =
+    form.kind === 'stands'
+      ? [
+          form.standSize ? `${form.standSize} stand` : '',
+          form.standServicing,
+          form.standTitle,
+          form.standRoadAccess,
+          form.standZoning
+        ]
+      : [form.bedrooms ? `${form.bedrooms} beds` : '', form.bathrooms ? `${form.bathrooms} baths` : '', form.guests ? `${form.guests} guests` : ''];
+  const summaryParts = [form.propertyType, form.spaceType, ...roomDetails, ...form.features].map((item) => item.trim()).filter(Boolean);
+  return summaryParts.length > 0 ? summaryParts.join(' · ') : 'Details available on request';
 };
 
 const compressImageUri = async (uri: string) => {
@@ -419,6 +480,7 @@ export default function App() {
   const [homeFilters, setHomeFilters] = useState<HomeFilters>(emptyHomeFilters);
   const [listingForm, setListingForm] = useState<ListingForm>(emptyListingForm);
   const [listingStep, setListingStep] = useState(0);
+  const [listingPublishError, setListingPublishError] = useState('');
   const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
   const [savedListingIds, setSavedListingIds] = useState<string[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
@@ -427,6 +489,11 @@ export default function App() {
   const [savedSearches, setSavedSearches] = useState(['Borrowdale gated 2 bed', 'Avondale furnished cottage', 'Ruwa serviced stand']);
   const [firebaseStatus, setFirebaseStatus] = useState<FirebaseStatus>(isFirebaseConfigured ? 'Connecting' : 'Not configured');
   const hasLoadedFirebaseData = useRef(!isFirebaseConfigured);
+  const isApplyingRemoteUserData = useRef(false);
+  const firebaseSaveId = useRef(0);
+  const firebaseSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [landlordListings, setLandlordListings] = useState<Listing[]>([]);
+  const [optimisticListings, setOptimisticListings] = useState<Listing[]>([]);
   const [lastListingDoc, setLastListingDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
   const [isLoadingListings, setIsLoadingListings] = useState(false);
   const [hasMoreListings, setHasMoreListings] = useState(true);
@@ -455,11 +522,9 @@ export default function App() {
   }, [activeKind, availableListings, homeFilters, query, savedListingIds]);
 
   const savedListings = useMemo(() => {
-    const knownListings = [...availableListings, ...initialListings].filter(
-      (listing, index, listings) => listings.findIndex((item) => item.id === listing.id) === index
-    );
+    const knownListings = uniqueListings([...availableListings, ...optimisticListings, ...landlordListings, ...initialListings]);
     return knownListings.filter((listing) => savedListingIds.includes(listing.id));
-  }, [availableListings, savedListingIds]);
+  }, [availableListings, optimisticListings, landlordListings, savedListingIds]);
 
   const activeHomeFilterCount = useMemo(() => {
     return [
@@ -472,6 +537,56 @@ export default function App() {
     ].filter(Boolean).length;
   }, [homeFilters]);
 
+  const beginFirebaseSave = () => {
+    const saveId = firebaseSaveId.current + 1;
+    firebaseSaveId.current = saveId;
+    setFirebaseStatus('Saving');
+
+    if (firebaseSaveTimer.current) {
+      clearTimeout(firebaseSaveTimer.current);
+    }
+
+    firebaseSaveTimer.current = setTimeout(() => {
+      if (firebaseSaveId.current === saveId) {
+        setFirebaseStatus('Offline');
+      }
+    }, 8000);
+
+    return (status: FirebaseStatus) => {
+      if (firebaseSaveId.current !== saveId) {
+        return;
+      }
+
+      if (firebaseSaveTimer.current) {
+        clearTimeout(firebaseSaveTimer.current);
+        firebaseSaveTimer.current = null;
+      }
+
+      setFirebaseStatus(status);
+    };
+  };
+
+  useEffect(() => {
+    if (!db) {
+      setFirebaseStatus('Not configured');
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setFirebaseStatus((currentStatus) => (currentStatus === 'Connecting' ? 'Offline' : currentStatus));
+    }, 8000);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (firebaseSaveTimer.current) {
+        clearTimeout(firebaseSaveTimer.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const firestore = db;
     if (!firestore) {
@@ -483,17 +598,21 @@ export default function App() {
       (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.data() as Partial<HomeSwipeData>;
+          isApplyingRemoteUserData.current = true;
           setSavedListingIds(data.savedListingIds || []);
           setConversations(data.conversations?.length ? data.conversations : initialConversations);
           setApplications(data.applications?.length ? data.applications : initialApplications);
           setSavedSearches(data.savedSearches?.length ? data.savedSearches : ['Borrowdale gated 2 bed', 'Avondale furnished cottage', 'Ruwa serviced stand']);
         } else {
+          const completeSave = beginFirebaseSave();
           setDoc(doc(firestore, 'homeswipeUsers', userDataDocId), {
             applications,
             conversations,
             savedListingIds,
             savedSearches
-          });
+          })
+            .then(() => completeSave('Synced'))
+            .catch(() => completeSave('Offline'));
         }
 
         hasLoadedFirebaseData.current = true;
@@ -508,10 +627,33 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  const loadListingsPage = async (mode: 'reset' | 'more') => {
+  useEffect(() => {
     const firestore = db;
     if (!firestore) {
-      const localListings = initialListings.filter((listing) => listing.kind === activeKind);
+      return;
+    }
+
+    return onSnapshot(
+      firestoreQuery(collection(firestore, 'homeswipeListings'), where('host', '==', currentLandlordProfile.displayName)),
+      (snapshot) => {
+        const remoteListings = snapshot.docs.map((listingDoc) => listingDoc.data() as Listing);
+        setLandlordListings((currentListings) =>
+          uniqueListings([...remoteListings, ...currentListings])
+        );
+        setOptimisticListings((currentListings) =>
+          currentListings.filter((localListing) => !remoteListings.some((remoteListing) => remoteListing.id === localListing.id))
+        );
+      },
+      () => setFirebaseStatus('Offline')
+    );
+  }, []);
+
+  const loadListingsPage = async (mode: 'reset' | 'more') => {
+    const firestore = db;
+    const localLandlordListings = uniqueListings([...optimisticListings, ...landlordListings]).filter((listing) => listing.kind === activeKind);
+
+    if (!firestore) {
+      const localListings = uniqueListings([...localLandlordListings, ...initialListings.filter((listing) => listing.kind === activeKind)]);
       setAvailableListings(mode === 'reset' ? localListings.slice(0, listingsPageSize) : localListings);
       setHasMoreListings(localListings.length > listingsPageSize);
       return;
@@ -545,7 +687,7 @@ export default function App() {
             })
           )
         );
-        const seededListings = initialListings.filter((listing) => listing.kind === activeKind).slice(0, listingsPageSize);
+        const seededListings = uniqueListings([...localLandlordListings, ...initialListings.filter((listing) => listing.kind === activeKind)]).slice(0, listingsPageSize);
         setAvailableListings(seededListings);
         setLastListingDoc(null);
         setHasMoreListings(false);
@@ -554,14 +696,14 @@ export default function App() {
       }
 
       setAvailableListings((currentListings) => {
-        const nextListings = mode === 'more' ? [...currentListings, ...listings] : listings;
-        return nextListings.filter((listing, index, allListings) => allListings.findIndex((item) => item.id === listing.id) === index);
+        const nextListings = mode === 'more' ? [...currentListings, ...listings] : [...localLandlordListings, ...listings];
+        return uniqueListings(nextListings);
       });
       setLastListingDoc(snapshot.docs[snapshot.docs.length - 1] || null);
       setHasMoreListings(snapshot.docs.length === listingsPageSize);
       setFirebaseStatus('Synced');
     } catch {
-      const fallbackListings = initialListings.filter((listing) => listing.kind === activeKind);
+      const fallbackListings = uniqueListings([...localLandlordListings, ...initialListings.filter((listing) => listing.kind === activeKind)]);
       setAvailableListings(mode === 'more' ? fallbackListings : fallbackListings.slice(0, listingsPageSize));
       setHasMoreListings(fallbackListings.length > listingsPageSize);
       setFirebaseStatus('Offline');
@@ -578,12 +720,26 @@ export default function App() {
   }, [activeKind]);
 
   useEffect(() => {
+    const activeLandlordListings = uniqueListings([...optimisticListings, ...landlordListings]).filter((listing) => listing.kind === activeKind);
+    if (activeLandlordListings.length === 0) {
+      return;
+    }
+
+    setAvailableListings((currentListings) => uniqueListings([...activeLandlordListings, ...currentListings]));
+  }, [activeKind, optimisticListings, landlordListings]);
+
+  useEffect(() => {
     const firestore = db;
     if (!firestore || !hasLoadedFirebaseData.current) {
       return;
     }
 
-    setFirebaseStatus('Saving');
+    if (isApplyingRemoteUserData.current) {
+      isApplyingRemoteUserData.current = false;
+      return;
+    }
+
+    const completeSave = beginFirebaseSave();
     setDoc(
       doc(firestore, 'homeswipeUsers', userDataDocId),
       {
@@ -594,19 +750,34 @@ export default function App() {
       },
       { merge: true }
     )
-      .then(() => setFirebaseStatus('Synced'))
-      .catch(() => setFirebaseStatus('Offline'));
+      .then(() => completeSave('Synced'))
+      .catch(() => completeSave('Offline'));
   }, [applications, conversations, savedListingIds, savedSearches]);
 
   const addListing = () => {
-    const title = listingForm.title.trim();
-    const location = listingForm.location.trim();
-    const price = listingForm.price.trim();
-    const host = listingForm.host.trim();
+    const streetAddress = listingForm.location.trim();
+    const area = listingForm.area.trim();
+    const city = listingForm.city.trim();
+    const mapPin = listingForm.mapPin.trim();
+    const location = [streetAddress, area, city].filter(Boolean).join(', ');
+    const priceNumber = listingForm.price.replace(/[^0-9.]/g, '').trim();
+    const price = `$${priceNumber}`;
+    const host = currentLandlordProfile.displayName;
 
-    if (!title || !location || !price || !host) {
+    const missingFields = [
+      !streetAddress ? 'street address or stand number' : '',
+      !area ? 'suburb or area' : '',
+      !city ? 'city or town' : '',
+      !priceNumber ? 'price' : ''
+    ].filter(Boolean);
+
+    if (missingFields.length > 0) {
+      setListingPublishError(`Add ${missingFields.join(', ')} before publishing.`);
+      setListingStep(missingFields.includes('price') ? (listingForm.kind === 'stands' ? 2 : 3) : 0);
       return;
     }
+
+    setListingPublishError('');
 
     const fallbackImage =
       listingForm.kind === 'stands'
@@ -622,13 +793,28 @@ export default function App() {
       .split(',')
       .map((amenity) => amenity.trim())
       .filter(Boolean);
+    const listingAmenities = [...amenities, ...listingForm.features].filter((amenity, index, allAmenities) => allAmenities.indexOf(amenity) === index);
+    const derivedSummary = getListingFormSummary(listingForm);
+    const houseRules = [...listingForm.houseRules, listingForm.houseRuleDraft]
+      .map((rule) => rule.trim())
+      .filter(Boolean);
+    const title =
+      listingForm.title.trim() ||
+      [listingForm.propertyType.trim() || (listingForm.kind === 'stands' ? 'Stand' : 'Home'), area, city].filter(Boolean).join(' in ');
     const details = [
       listingForm.propertyType || 'Home',
       listingForm.spaceType || 'Entire place',
       listingForm.guests ? `${listingForm.guests} guests` : '',
       listingForm.bedrooms ? `${listingForm.bedrooms} bedrooms` : '',
       listingForm.bathrooms ? `${listingForm.bathrooms} bathrooms` : '',
-      listingForm.meta.trim()
+      listingForm.standSize ? `Stand size: ${listingForm.standSize}` : '',
+      listingForm.standServicing ? `Servicing: ${listingForm.standServicing}` : '',
+      listingForm.standTitle ? `Title: ${listingForm.standTitle}` : '',
+      listingForm.standRoadAccess ? `Access: ${listingForm.standRoadAccess}` : '',
+      listingForm.standZoning ? `Zoning: ${listingForm.standZoning}` : '',
+      mapPin ? `Map pin: ${mapPin}` : '',
+      ...houseRules.map((rule) => `Rule: ${rule}`),
+      derivedSummary
     ].filter(Boolean);
 
     const newListing: Listing = {
@@ -637,24 +823,68 @@ export default function App() {
       title,
       location,
       price,
-      meta: listingForm.meta.trim() || 'Details available on request',
+      meta: derivedSummary,
       host,
       image: uploadedPhotos[0] || listingForm.image.trim() || fallbackImage,
       photos: [uploadedPhotos[0] || listingForm.image.trim() || fallbackImage, ...uploadedPhotos.slice(1), ...galleryPhotos, fallbackImage],
       tag: listingForm.kind === 'rentals' ? 'New rental' : listingForm.kind === 'sales' ? 'New sale' : 'New stand',
       description: listingForm.description.trim() || `${title} is listed by ${host}. Contact the landlord to confirm viewing times, documents, and availability.`,
-      amenities: amenities.length > 0 ? amenities : ['Direct landlord contact', 'Viewing available', 'Saved listing', 'Verified details pending'],
-      details: details.length > 0 ? details : [location, price, host]
+      amenities: listingAmenities.length > 0 ? listingAmenities : ['Direct landlord contact', 'Viewing available', 'Saved listing', 'Verified details pending'],
+      details: details.length > 0 ? details : [location, price, host],
+      propertyType: listingForm.propertyType.trim(),
+      spaceType: listingForm.spaceType.trim(),
+      streetAddress,
+      area,
+      city,
+      mapPin,
+      features: listingForm.features,
+      rules: houseRules,
+      standSize: listingForm.standSize.trim(),
+      standServicing: listingForm.standServicing.trim(),
+      standTitle: listingForm.standTitle.trim(),
+      standRoadAccess: listingForm.standRoadAccess.trim(),
+      standZoning: listingForm.standZoning.trim(),
+      ownerId: currentLandlordProfile.id
     };
 
-    setAvailableListings((currentListings) => [newListing, ...currentListings]);
+    setLandlordListings((currentListings) => uniqueListings([newListing, ...currentListings]));
+    setOptimisticListings((currentListings) => uniqueListings([newListing, ...currentListings]));
+    setAvailableListings((currentListings) => uniqueListings([newListing, ...currentListings]));
     if (db) {
-      setDoc(doc(db, 'homeswipeListings', newListing.id), newListing).catch(() => setFirebaseStatus('Offline'));
+      const completeSave = beginFirebaseSave();
+      setDoc(doc(db, 'homeswipeListings', newListing.id), newListing, { merge: true })
+        .then(() => completeSave('Synced'))
+        .catch(() => completeSave('Offline'));
     }
     setActiveKind(newListing.kind);
+    setActiveTab('home');
+    setQuery('');
+    setHomeFilters(emptyHomeFilters);
     setListingForm(emptyListingForm);
     setListingStep(0);
     setShowListingForm(false);
+  };
+
+  const updateListing = (updatedListing: Listing) => {
+    setLandlordListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === updatedListing.id ? updatedListing : listing))));
+    setOptimisticListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === updatedListing.id ? updatedListing : listing))));
+    setAvailableListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === updatedListing.id ? updatedListing : listing))));
+    setSelectedListing((currentListing) => (currentListing?.id === updatedListing.id ? updatedListing : currentListing));
+
+    if (db) {
+      const completeSave = beginFirebaseSave();
+      setDoc(doc(db, 'homeswipeListings', updatedListing.id), updatedListing, { merge: true })
+        .then(() => completeSave('Synced'))
+        .catch(() => completeSave('Offline'));
+    }
+  };
+
+  const openAddListingForm = () => {
+    setSelectedListing(null);
+    setShowHomeFilters(false);
+    setListingStep(0);
+    setShowListingForm(true);
+    setActiveTab('home');
   };
 
   const pickListingImages = async () => {
@@ -815,6 +1045,7 @@ export default function App() {
             isLoadingListings={isLoadingListings}
             query={query}
             listingForm={listingForm}
+            listingPublishError={listingPublishError}
             showListingForm={showListingForm}
             showHomeFilters={showHomeFilters}
             addListing={addListing}
@@ -832,6 +1063,7 @@ export default function App() {
             setHomeFilters={setHomeFilters}
             setListingForm={setListingForm}
             setListingStep={setListingStep}
+            setListingPublishError={setListingPublishError}
             setQuery={setQuery}
             setSelectedListing={setSelectedListing}
             setShowHomeFilters={setShowHomeFilters}
@@ -851,14 +1083,17 @@ export default function App() {
           <ProfileScreen
             applications={applications}
             listings={availableListings}
+            landlordListings={landlordListings}
             currentSearch={query}
             savedListings={savedListings}
             savedSearches={savedSearches}
             onMessageListing={openListingConversation}
+            onAddListing={openAddListingForm}
             onOpenListing={openListingFromProfile}
             onRemoveSavedSearch={removeSavedSearch}
             onSaveCurrentSearch={saveCurrentSearch}
             onToggleSavedListing={toggleSavedListing}
+            onUpdateListing={updateListing}
           />
         )}
       </View>
@@ -892,6 +1127,7 @@ function HomeScreen({
   homeFilters,
   isLoadingListings,
   listingForm,
+  listingPublishError,
   query,
   showHomeFilters,
   showListingForm,
@@ -910,6 +1146,7 @@ function HomeScreen({
   setHomeFilters,
   setListingForm,
   setListingStep,
+  setListingPublishError,
   setQuery,
   setSelectedListing,
   setShowHomeFilters,
@@ -923,6 +1160,7 @@ function HomeScreen({
   homeFilters: HomeFilters;
   isLoadingListings: boolean;
   listingForm: ListingForm;
+  listingPublishError: string;
   query: string;
   showHomeFilters: boolean;
   showListingForm: boolean;
@@ -941,6 +1179,7 @@ function HomeScreen({
   setHomeFilters: React.Dispatch<React.SetStateAction<HomeFilters>>;
   setListingForm: React.Dispatch<React.SetStateAction<ListingForm>>;
   setListingStep: (step: number) => void;
+  setListingPublishError: (message: string) => void;
   setQuery: (value: string) => void;
   setSelectedListing: (listing: Listing | null) => void;
   setShowHomeFilters: (value: boolean) => void;
@@ -961,11 +1200,18 @@ function HomeScreen({
   }
 
   const loadMoreWhenNearBottom = ({ nativeEvent }: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+    if (showListingForm) {
+      return;
+    }
+
     const distanceFromBottom = nativeEvent.contentSize.height - nativeEvent.layoutMeasurement.height - nativeEvent.contentOffset.y;
     if (distanceFromBottom < 240 && hasMoreListings && !isLoadingListings) {
       onLoadMoreListings();
     }
   };
+  const listingSteps = listingForm.kind === 'stands' ? ['Basics', 'Photos', 'Price'] : ['Basics', 'Space', 'Photos', 'Price'];
+  const activeListingStep = listingSteps[Math.min(listingStep, listingSteps.length - 1)];
+  const derivedListingSummary = getListingFormSummary(listingForm);
 
   return (
     <ScrollView
@@ -990,7 +1236,10 @@ function HomeScreen({
         <Pressable
           style={styles.addHomeButton}
           accessibilityLabel="Add a house listing"
-          onPress={() => setShowListingForm(!showListingForm)}
+          onPress={() => {
+            setListingPublishError('');
+            setShowListingForm(!showListingForm);
+          }}
         >
           <Ionicons name={showListingForm ? 'close-outline' : 'add-outline'} size={22} color="#ffffff" />
           <Text style={styles.addHomeText}>{showListingForm ? 'Close' : 'Add home'}</Text>
@@ -998,23 +1247,29 @@ function HomeScreen({
       </View>
 
       {showListingForm && (
-        <View style={styles.formPanel}>
+        <View style={styles.listingFormScreen}>
           <View style={styles.panelHeader}>
             <View>
               <Text style={styles.formTitle}>Add your place</Text>
-              <Text style={styles.panelHint}>Step {listingStep + 1} of 4</Text>
+              <Text style={styles.panelHint}>Step {Math.min(listingStep + 1, listingSteps.length)} of {listingSteps.length}</Text>
             </View>
             <Ionicons name="home-outline" size={28} color="#0f766e" />
           </View>
           <View style={styles.stepRail}>
-            {['Basics', 'Space', 'Photos', 'Price'].map((step, index) => (
+            {listingSteps.map((step, index) => (
               <Pressable key={step} style={[styles.stepPill, listingStep === index && styles.stepPillActive]} onPress={() => setListingStep(index)}>
                 <Text style={[styles.stepText, listingStep === index && styles.stepTextActive]}>{step}</Text>
               </Pressable>
             ))}
           </View>
+          {listingPublishError ? (
+            <View style={styles.publishError}>
+              <Ionicons name="alert-circle-outline" size={18} color="#b91c1c" />
+              <Text style={styles.publishErrorText}>{listingPublishError}</Text>
+            </View>
+          ) : null}
 
-          {listingStep === 0 && (
+          {activeListingStep === 'Basics' && (
             <>
               <View style={styles.segmentedControl}>
                 {listingFilters.map((filter) => {
@@ -1022,7 +1277,11 @@ function HomeScreen({
                   return (
                     <Pressable
                       key={filter.key}
-                      onPress={() => setListingForm((current) => ({ ...current, kind: filter.key }))}
+                      onPress={() => {
+                        setListingPublishError('');
+                        setListingForm((current) => ({ ...current, kind: filter.key }));
+                        setListingStep(0);
+                      }}
                       style={[styles.segmentButton, selected && styles.segmentButtonActive]}
                     >
                       <Text style={[styles.segmentText, selected && styles.segmentTextActive]}>{filter.label}</Text>
@@ -1031,53 +1290,222 @@ function HomeScreen({
                 })}
               </View>
               <View style={styles.formGrid}>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Property type</Text>
                 <TextInput
-                  placeholder="Property type, e.g. Apartment"
+                  placeholder={listingForm.kind === 'stands' ? 'Residential stand, commercial stand' : 'Apartment, house, cottage'}
                   placeholderTextColor="#94a3b8"
                   value={listingForm.propertyType}
                   onChangeText={(value) => setListingForm((current) => ({ ...current, propertyType: value }))}
                   style={styles.formInput}
                 />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Space type</Text>
                 <TextInput
-                  placeholder="Entire place, room, or stand"
+                  placeholder={listingForm.kind === 'stands' ? 'Serviced stand, infill stand, corner stand' : 'Entire place or room'}
                   placeholderTextColor="#94a3b8"
                   value={listingForm.spaceType}
                   onChangeText={(value) => setListingForm((current) => ({ ...current, spaceType: value }))}
                   style={styles.formInput}
                 />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Street address or stand number</Text>
                 <TextInput
-                  placeholder="Location"
+                  placeholder="Street address or stand number"
                   placeholderTextColor="#94a3b8"
                   value={listingForm.location}
                   onChangeText={(value) => setListingForm((current) => ({ ...current, location: value }))}
                   style={styles.formInput}
                 />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Suburb or area</Text>
                 <TextInput
-                  placeholder="Landlord or agency name"
+                  placeholder="Suburb or area"
                   placeholderTextColor="#94a3b8"
-                  value={listingForm.host}
-                  onChangeText={(value) => setListingForm((current) => ({ ...current, host: value }))}
+                  value={listingForm.area}
+                  onChangeText={(value) => setListingForm((current) => ({ ...current, area: value }))}
                   style={styles.formInput}
                 />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>City or town</Text>
+                <TextInput
+                  placeholder="City or town"
+                  placeholderTextColor="#94a3b8"
+                  value={listingForm.city}
+                  onChangeText={(value) => setListingForm((current) => ({ ...current, city: value }))}
+                  style={styles.formInput}
+                />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Map pin, Plus Code, or coordinates</Text>
+                <TextInput
+                  placeholder="Map pin, Plus Code, or coordinates"
+                  placeholderTextColor="#94a3b8"
+                  value={listingForm.mapPin}
+                  onChangeText={(value) => setListingForm((current) => ({ ...current, mapPin: value }))}
+                  style={styles.formInput}
+                />
+                </View>
+                {listingForm.kind === 'stands' && (
+                  <>
+                    <View style={styles.formField}>
+                      <Text style={styles.formLabel}>Stand size</Text>
+                      <TextInput
+                        placeholder="500 sqm, 1 acre, 2000 m2"
+                        placeholderTextColor="#94a3b8"
+                        value={listingForm.standSize}
+                        onChangeText={(value) => setListingForm((current) => ({ ...current, standSize: value }))}
+                        style={styles.formInput}
+                      />
+                    </View>
+                    <View style={styles.formField}>
+                      <Text style={styles.formLabel}>Servicing</Text>
+                      <TextInput
+                        placeholder="Serviced, partially serviced, unserviced"
+                        placeholderTextColor="#94a3b8"
+                        value={listingForm.standServicing}
+                        onChangeText={(value) => setListingForm((current) => ({ ...current, standServicing: value }))}
+                        style={styles.formInput}
+                      />
+                    </View>
+                    <View style={styles.formField}>
+                      <Text style={styles.formLabel}>Title or paperwork</Text>
+                      <TextInput
+                        placeholder="Title deed, cession, subdivision permit"
+                        placeholderTextColor="#94a3b8"
+                        value={listingForm.standTitle}
+                        onChangeText={(value) => setListingForm((current) => ({ ...current, standTitle: value }))}
+                        style={styles.formInput}
+                      />
+                    </View>
+                    <View style={styles.formField}>
+                      <Text style={styles.formLabel}>Road access</Text>
+                      <TextInput
+                        placeholder="Tarred road, gravel road, corner frontage"
+                        placeholderTextColor="#94a3b8"
+                        value={listingForm.standRoadAccess}
+                        onChangeText={(value) => setListingForm((current) => ({ ...current, standRoadAccess: value }))}
+                        style={styles.formInput}
+                      />
+                    </View>
+                    <View style={styles.formField}>
+                      <Text style={styles.formLabel}>Zoning or use</Text>
+                      <TextInput
+                        placeholder="Residential, commercial, agro-residential"
+                        placeholderTextColor="#94a3b8"
+                        value={listingForm.standZoning}
+                        onChangeText={(value) => setListingForm((current) => ({ ...current, standZoning: value }))}
+                        style={styles.formInput}
+                      />
+                    </View>
+                  </>
+                )}
               </View>
             </>
           )}
 
-          {listingStep === 1 && (
+          {activeListingStep === 'Space' && (
             <>
               <View style={styles.formGrid}>
-                <TextInput placeholder="Guests" placeholderTextColor="#94a3b8" value={listingForm.guests} onChangeText={(value) => setListingForm((current) => ({ ...current, guests: value }))} style={styles.formInput} />
-                <TextInput placeholder="Bedrooms" placeholderTextColor="#94a3b8" value={listingForm.bedrooms} onChangeText={(value) => setListingForm((current) => ({ ...current, bedrooms: value }))} style={styles.formInput} />
-                <TextInput placeholder="Bathrooms" placeholderTextColor="#94a3b8" value={listingForm.bathrooms} onChangeText={(value) => setListingForm((current) => ({ ...current, bathrooms: value }))} style={styles.formInput} />
-                <TextInput placeholder="Key amenities, comma separated" placeholderTextColor="#94a3b8" value={listingForm.amenities} onChangeText={(value) => setListingForm((current) => ({ ...current, amenities: value }))} style={styles.formInput} />
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Guests</Text>
+                  <TextInput placeholder="Guests" placeholderTextColor="#94a3b8" value={listingForm.guests} onChangeText={(value) => setListingForm((current) => ({ ...current, guests: value }))} style={styles.formInput} />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Bedrooms</Text>
+                  <TextInput placeholder="Bedrooms" placeholderTextColor="#94a3b8" value={listingForm.bedrooms} onChangeText={(value) => setListingForm((current) => ({ ...current, bedrooms: value }))} style={styles.formInput} />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Bathrooms</Text>
+                  <TextInput placeholder="Bathrooms" placeholderTextColor="#94a3b8" value={listingForm.bathrooms} onChangeText={(value) => setListingForm((current) => ({ ...current, bathrooms: value }))} style={styles.formInput} />
+                </View>
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Other amenities</Text>
+                  <TextInput placeholder="Garden, pool, staff quarters" placeholderTextColor="#94a3b8" value={listingForm.amenities} onChangeText={(value) => setListingForm((current) => ({ ...current, amenities: value }))} style={styles.formInput} />
+                </View>
               </View>
-              <TextInput placeholder="House rules or property notes" placeholderTextColor="#94a3b8" value={listingForm.houseRules} onChangeText={(value) => setListingForm((current) => ({ ...current, houseRules: value }))} style={styles.formInput} />
+              <View style={styles.featureGrid}>
+                {listingFeatureOptions.map((feature) => {
+                  const selected = listingForm.features.includes(feature);
+                  return (
+                    <Pressable
+                      key={feature}
+                      style={[styles.featureOption, selected && styles.featureOptionActive]}
+                      onPress={() =>
+                        setListingForm((current) => ({
+                          ...current,
+                          features: current.features.includes(feature)
+                            ? current.features.filter((item) => item !== feature)
+                            : [...current.features, feature]
+                        }))
+                      }
+                    >
+                      <Ionicons name={selected ? 'checkbox-outline' : 'square-outline'} size={20} color={selected ? '#ffffff' : '#0f766e'} />
+                      <Text style={[styles.featureText, selected && styles.featureTextActive]}>{feature}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.ruleBuilder}>
+                <View style={styles.formGrid}>
+                  <TextInput
+                    placeholder="Add one rule, e.g. No smoking"
+                    placeholderTextColor="#94a3b8"
+                    value={listingForm.houseRuleDraft}
+                    onChangeText={(value) => setListingForm((current) => ({ ...current, houseRuleDraft: value }))}
+                    style={styles.formInput}
+                  />
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={() =>
+                      setListingForm((current) => {
+                        const rule = current.houseRuleDraft.trim();
+                        if (!rule) {
+                          return current;
+                        }
+
+                        return {
+                          ...current,
+                          houseRuleDraft: '',
+                          houseRules: current.houseRules.includes(rule) ? current.houseRules : [...current.houseRules, rule]
+                        };
+                      })
+                    }
+                  >
+                    <Ionicons name="add-outline" size={18} color="#0f766e" />
+                    <Text style={styles.secondaryButtonText}>Add rule</Text>
+                  </Pressable>
+                </View>
+                {listingForm.houseRules.length > 0 && (
+                  <View style={styles.ruleList}>
+                    {listingForm.houseRules.map((rule) => (
+                      <View key={rule} style={styles.ruleRow}>
+                        <Ionicons name="checkmark-circle-outline" size={18} color="#0f766e" />
+                        <Text style={styles.ruleText}>{rule}</Text>
+                        <Pressable
+                          accessibilityLabel="Remove rule"
+                          onPress={() => setListingForm((current) => ({ ...current, houseRules: current.houseRules.filter((item) => item !== rule) }))}
+                        >
+                          <Ionicons name="close-circle-outline" size={22} color="#64748b" />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
             </>
           )}
 
-          {listingStep === 2 && (
+          {activeListingStep === 'Photos' && (
             <>
-              <TextInput placeholder="Listing title" placeholderTextColor="#94a3b8" value={listingForm.title} onChangeText={(value) => setListingForm((current) => ({ ...current, title: value }))} style={styles.formInput} />
+              <View style={styles.formFieldFull}>
+                <Text style={styles.formLabel}>Listing title</Text>
+                <TextInput placeholder="Listing title" placeholderTextColor="#94a3b8" value={listingForm.title} onChangeText={(value) => setListingForm((current) => ({ ...current, title: value }))} style={styles.formInput} />
+              </View>
               <ImageDropZone onDropImages={onDropListingImages} onPickImages={onPickListingImages} />
               {listingForm.localPhotos.length > 0 && (
                 <View style={styles.uploadPreviewGrid}>
@@ -1101,20 +1529,45 @@ function HomeScreen({
                   ))}
                 </View>
               )}
-              <TextInput placeholder="Cover image URL, optional" placeholderTextColor="#94a3b8" value={listingForm.image} onChangeText={(value) => setListingForm((current) => ({ ...current, image: value }))} style={styles.formInput} />
-              <TextInput placeholder="More photo URLs, one per line" placeholderTextColor="#94a3b8" value={listingForm.photos} onChangeText={(value) => setListingForm((current) => ({ ...current, photos: value }))} style={[styles.formInput, styles.multilineInput]} multiline />
-              <TextInput placeholder="Describe your place" placeholderTextColor="#94a3b8" value={listingForm.description} onChangeText={(value) => setListingForm((current) => ({ ...current, description: value }))} style={[styles.formInput, styles.multilineInput]} multiline />
+              <View style={styles.formFieldFull}>
+                <Text style={styles.formLabel}>Cover image URL</Text>
+                <TextInput placeholder="Optional" placeholderTextColor="#94a3b8" value={listingForm.image} onChangeText={(value) => setListingForm((current) => ({ ...current, image: value }))} style={styles.formInput} />
+              </View>
+              <View style={styles.formFieldFull}>
+                <Text style={styles.formLabel}>More photo URLs</Text>
+                <TextInput placeholder="One per line" placeholderTextColor="#94a3b8" value={listingForm.photos} onChangeText={(value) => setListingForm((current) => ({ ...current, photos: value }))} style={[styles.formInput, styles.multilineInput]} multiline />
+              </View>
+              <View style={styles.formFieldFull}>
+                <Text style={styles.formLabel}>Description</Text>
+                <TextInput placeholder="Describe your place" placeholderTextColor="#94a3b8" value={listingForm.description} onChangeText={(value) => setListingForm((current) => ({ ...current, description: value }))} style={[styles.formInput, styles.multilineInput]} multiline />
+              </View>
             </>
           )}
 
-          {listingStep === 3 && (
+          {activeListingStep === 'Price' && (
             <>
               <View style={styles.formGrid}>
-                <TextInput placeholder="Price, e.g. $850/mo" placeholderTextColor="#94a3b8" value={listingForm.price} onChangeText={(value) => setListingForm((current) => ({ ...current, price: value }))} style={styles.formInput} />
-                <TextInput placeholder="Summary, e.g. 2 beds · gated · solar" placeholderTextColor="#94a3b8" value={listingForm.meta} onChangeText={(value) => setListingForm((current) => ({ ...current, meta: value }))} style={styles.formInput} />
+                <View style={styles.formField}>
+                  <Text style={styles.formLabel}>Price</Text>
+                <View style={styles.priceInputShell}>
+                  <Text style={styles.pricePrefix}>$</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    placeholder="850"
+                    placeholderTextColor="#94a3b8"
+                    value={listingForm.price}
+                    onChangeText={(value) => setListingForm((current) => ({ ...current, price: value.replace(/[^0-9.]/g, '') }))}
+                    style={styles.priceInput}
+                  />
+                </View>
+                </View>
+              </View>
+              <View style={styles.generatedSummary}>
+                <Text style={styles.formLabel}>Listing summary</Text>
+                <Text style={styles.generatedSummaryText}>{derivedListingSummary}</Text>
               </View>
               <View style={styles.detailFactGrid}>
-                {[listingForm.propertyType, listingForm.spaceType, listingForm.location, listingForm.price].filter(Boolean).map((detail) => (
+                {[listingForm.propertyType, listingForm.spaceType, [listingForm.location, listingForm.area, listingForm.city].filter(Boolean).join(', '), listingForm.price ? `$${listingForm.price}` : '', ...listingForm.features].filter(Boolean).map((detail) => (
                   <View key={detail} style={styles.detailFact}>
                     <Ionicons name="checkmark-circle-outline" size={19} color="#0f766e" />
                     <Text style={styles.detailFactText}>{detail}</Text>
@@ -1129,8 +1582,8 @@ function HomeScreen({
               <Ionicons name="arrow-back-outline" size={18} color="#0f766e" />
               <Text style={styles.secondaryButtonText}>Back</Text>
             </Pressable>
-            {listingStep < 3 ? (
-              <Pressable style={styles.primaryButton} onPress={() => setListingStep(Math.min(3, listingStep + 1))}>
+            {listingStep < listingSteps.length - 1 ? (
+              <Pressable style={styles.primaryButton} onPress={() => setListingStep(Math.min(listingSteps.length - 1, listingStep + 1))}>
                 <Text style={styles.primaryButtonText}>Next</Text>
                 <Ionicons name="arrow-forward-outline" size={18} color="#ffffff" />
               </Pressable>
@@ -1144,6 +1597,8 @@ function HomeScreen({
         </View>
       )}
 
+      {!showListingForm && (
+        <>
       <View style={styles.searchBar}>
         <Ionicons name="search-outline" size={20} color="#64748b" />
         <TextInput
@@ -1270,6 +1725,8 @@ function HomeScreen({
           <Ionicons name="download-outline" size={18} color="#0f766e" />
           <Text style={styles.secondaryButtonText}>{isLoadingListings ? 'Loading homes...' : 'Load more homes'}</Text>
         </Pressable>
+      )}
+        </>
       )}
     </ScrollView>
   );
@@ -1834,27 +2291,41 @@ function MessagesScreen({
 function ProfileScreen({
   applications,
   currentSearch,
+  landlordListings,
   listings,
   savedListings,
   savedSearches,
   onMessageListing,
+  onAddListing,
   onOpenListing,
   onRemoveSavedSearch,
   onSaveCurrentSearch,
-  onToggleSavedListing
+  onToggleSavedListing,
+  onUpdateListing
 }: {
   applications: RentalApplication[];
   currentSearch: string;
+  landlordListings: Listing[];
   listings: Listing[];
   savedListings: Listing[];
   savedSearches: string[];
   onMessageListing: (listing: Listing) => void;
+  onAddListing: () => void;
   onOpenListing: (listing: Listing) => void;
   onRemoveSavedSearch: (search: string) => void;
   onSaveCurrentSearch: (search: string) => void;
   onToggleSavedListing: (listingId: string) => void;
+  onUpdateListing: (listing: Listing) => void;
 }) {
   const [profileView, setProfileView] = useState<ProfileView>('overview');
+  const [editingListingId, setEditingListingId] = useState<string | null>(null);
+  const [listingDraft, setListingDraft] = useState({
+    title: '',
+    location: '',
+    price: '',
+    meta: '',
+    description: ''
+  });
   const [personalInfo, setPersonalInfo] = useState({
     fullName: 'Tendai Ndlovu',
     phone: '+263 77 123 4567',
@@ -1876,19 +2347,21 @@ function ProfileScreen({
   const activeTitle =
     profileView === 'overview'
       ? 'Profile'
-      : profileView === 'saved'
-        ? 'Saved homes'
-        : profileView === 'applications'
-          ? 'Applications'
-          : profileView === 'rating'
-            ? 'Tenant rating'
-            : profileView === 'personal'
-              ? 'Personal information'
-              : profileView === 'documents'
-                ? 'Verification documents'
-                : profileView === 'searches'
-                  ? 'Saved searches'
-                  : 'Payment preferences';
+      : profileView === 'landlordListings'
+        ? 'My listings'
+        : profileView === 'saved'
+          ? 'Saved homes'
+          : profileView === 'applications'
+            ? 'Applications'
+            : profileView === 'rating'
+              ? 'Tenant rating'
+              : profileView === 'personal'
+                ? 'Personal information'
+                : profileView === 'documents'
+                  ? 'Verification documents'
+                  : profileView === 'searches'
+                    ? 'Saved searches'
+                    : 'Payment preferences';
 
   const getListingForApplication = (application: RentalApplication) => {
     return listings.find((listing) => listing.id === application.listingId);
@@ -1898,6 +2371,32 @@ function ProfileScreen({
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) => (document.id === id ? { ...document, status: 'Ready' } : document))
     );
+  };
+
+  const startEditingListing = (listing: Listing) => {
+    setEditingListingId(listing.id);
+    setListingDraft({
+      title: listing.title,
+      location: listing.location,
+      price: listing.price.replace(/[^0-9.]/g, ''),
+      meta: listing.meta,
+      description: listing.description
+    });
+  };
+
+  const saveListingChanges = (listing: Listing) => {
+    const priceNumber = listingDraft.price.replace(/[^0-9.]/g, '').trim();
+    const updatedListing = {
+      ...listing,
+      title: listingDraft.title.trim() || listing.title,
+      location: listingDraft.location.trim() || listing.location,
+      price: priceNumber ? `$${priceNumber}` : listing.price,
+      meta: listingDraft.meta.trim() || listing.meta,
+      description: listingDraft.description.trim() || listing.description
+    };
+
+    onUpdateListing(updatedListing);
+    setEditingListingId(null);
   };
 
   return (
@@ -1944,7 +2443,7 @@ function ProfileScreen({
             {[
               { key: 'personal' as const, label: 'Personal information' },
               { key: 'documents' as const, label: 'Verification documents' },
-              { key: 'searches' as const, label: 'Saved searches' },
+              { key: 'landlordListings' as const, label: 'My listings' },
               { key: 'payments' as const, label: 'Payment preferences' }
             ].map((item) => (
               <Pressable key={item.key} style={styles.settingRow} onPress={() => setProfileView(item.key)}>
@@ -1954,6 +2453,103 @@ function ProfileScreen({
             ))}
           </View>
         </>
+      )}
+
+      {profileView === 'landlordListings' && (
+        <View style={styles.profileSection}>
+          <Pressable style={styles.primaryButton} onPress={onAddListing}>
+            <Ionicons name="add-outline" size={18} color="#ffffff" />
+            <Text style={styles.primaryButtonText}>Add listing</Text>
+          </Pressable>
+          {landlordListings.length === 0 ? (
+            <View style={styles.emptyPanel}>
+              <Ionicons name="business-outline" size={30} color="#0f766e" />
+              <Text style={styles.formTitle}>No listings yet</Text>
+              <Text style={styles.panelHint}>Add a listing and it will appear here for edits.</Text>
+            </View>
+          ) : (
+            landlordListings.map((listing) => {
+              const isEditing = editingListingId === listing.id;
+              return (
+                <View key={listing.id} style={styles.applicationCard}>
+                  <View style={styles.cardTopline}>
+                    <Text style={styles.listingTag}>{listing.tag}</Text>
+                    <Text style={styles.messageTime}>{listing.kind}</Text>
+                  </View>
+                  {isEditing ? (
+                    <>
+                      <TextInput
+                        placeholder="Listing title"
+                        placeholderTextColor="#94a3b8"
+                        value={listingDraft.title}
+                        onChangeText={(title) => setListingDraft((current) => ({ ...current, title }))}
+                        style={styles.formInput}
+                      />
+                      <TextInput
+                        placeholder="Precise location"
+                        placeholderTextColor="#94a3b8"
+                        value={listingDraft.location}
+                        onChangeText={(location) => setListingDraft((current) => ({ ...current, location }))}
+                        style={styles.formInput}
+                      />
+                      <View style={styles.priceInputShell}>
+                        <Text style={styles.pricePrefix}>$</Text>
+                        <TextInput
+                          keyboardType="numeric"
+                          placeholder="850"
+                          placeholderTextColor="#94a3b8"
+                          value={listingDraft.price}
+                          onChangeText={(price) => setListingDraft((current) => ({ ...current, price: price.replace(/[^0-9.]/g, '') }))}
+                          style={styles.priceInput}
+                        />
+                      </View>
+                      <TextInput
+                        placeholder="Summary"
+                        placeholderTextColor="#94a3b8"
+                        value={listingDraft.meta}
+                        onChangeText={(meta) => setListingDraft((current) => ({ ...current, meta }))}
+                        style={styles.formInput}
+                      />
+                      <TextInput
+                        multiline
+                        placeholder="Description"
+                        placeholderTextColor="#94a3b8"
+                        value={listingDraft.description}
+                        onChangeText={(description) => setListingDraft((current) => ({ ...current, description }))}
+                        style={[styles.formInput, styles.multilineInput]}
+                      />
+                      <View style={styles.profileActionRow}>
+                        <Pressable style={styles.primaryButton} onPress={() => saveListingChanges(listing)}>
+                          <Ionicons name="save-outline" size={18} color="#ffffff" />
+                          <Text style={styles.primaryButtonText}>Save changes</Text>
+                        </Pressable>
+                        <Pressable style={styles.secondaryButton} onPress={() => setEditingListingId(null)}>
+                          <Text style={styles.secondaryButtonText}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.leaseTitle}>{listing.title}</Text>
+                      <Text style={styles.messageText}>{listing.location}</Text>
+                      <Text style={styles.listingPrice}>{listing.price}</Text>
+                      <View style={styles.profileActionRow}>
+                        <Pressable style={styles.secondaryButton} onPress={() => onOpenListing(listing)}>
+                          <Ionicons name="eye-outline" size={18} color="#0f766e" />
+                          <Text style={styles.secondaryButtonText}>View</Text>
+                        </Pressable>
+                        <Pressable style={styles.primaryButton} onPress={() => startEditingListing(listing)}>
+                          <Ionicons name="create-outline" size={18} color="#ffffff" />
+                          <Text style={styles.primaryButtonText}>Edit listing</Text>
+                        </Pressable>
+                      </View>
+                    </>
+                  )}
+                </View>
+              );
+            })
+          )}
+        </View>
       )}
 
       {profileView === 'saved' && (
@@ -2175,15 +2771,53 @@ const styles = StyleSheet.create({
     borderColor: '#dbeafe',
     marginBottom: 18
   },
+  listingFormScreen: {
+    gap: 14,
+    flexGrow: 1,
+    minHeight: Platform.OS === 'web' ? 640 : undefined,
+    paddingTop: 4,
+    paddingBottom: 24
+  },
   formTitle: {
     color: '#0f172a',
     fontSize: 20,
     fontWeight: '900'
   },
+  publishError: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    backgroundColor: '#fef2f2'
+  },
+  publishErrorText: {
+    flex: 1,
+    color: '#991b1b',
+    fontSize: 14,
+    fontWeight: '800'
+  },
   formGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10
+  },
+  formField: {
+    flex: 1,
+    minWidth: Platform.OS === 'web' ? 220 : undefined,
+    gap: 6
+  },
+  formFieldFull: {
+    gap: 6
+  },
+  formLabel: {
+    color: '#334155',
+    fontSize: 13,
+    fontWeight: '900'
   },
   formInput: {
     flex: 1,
@@ -2197,6 +2831,98 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     color: '#0f172a',
     fontSize: 15
+  },
+  priceInputShell: {
+    flex: 1,
+    minWidth: Platform.OS === 'web' ? 220 : undefined,
+    minHeight: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc'
+  },
+  pricePrefix: {
+    paddingLeft: 12,
+    paddingRight: 4,
+    color: '#0f766e',
+    fontSize: 16,
+    fontWeight: '900'
+  },
+  priceInput: {
+    flex: 1,
+    minHeight: 44,
+    paddingRight: 12,
+    paddingVertical: 10,
+    color: '#0f172a',
+    fontSize: 15
+  },
+  ruleBuilder: {
+    gap: 10
+  },
+  ruleList: {
+    gap: 8
+  },
+  ruleRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ccfbf1',
+    backgroundColor: '#f0fdfa'
+  },
+  ruleText: {
+    flex: 1,
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '700'
+  },
+  featureGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  featureOption: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#99f6e4',
+    backgroundColor: '#f0fdfa'
+  },
+  featureOptionActive: {
+    borderColor: '#0f766e',
+    backgroundColor: '#0f766e'
+  },
+  featureText: {
+    color: '#0f766e',
+    fontSize: 14,
+    fontWeight: '900'
+  },
+  featureTextActive: {
+    color: '#ffffff'
+  },
+  generatedSummary: {
+    gap: 6,
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ccfbf1',
+    backgroundColor: '#f0fdfa'
+  },
+  generatedSummaryText: {
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: '800',
+    lineHeight: 21
   },
   multilineInput: {
     minHeight: 82,
