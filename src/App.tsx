@@ -20,6 +20,7 @@ import { Image as CompressorImage } from 'react-native-compressor';
 import { launchImageLibrary } from 'react-native-image-picker';
 import {
   collection,
+  deleteDoc,
   doc,
   DocumentData,
   getDocs,
@@ -64,6 +65,10 @@ type Listing = {
   standRoadAccess?: string;
   standZoning?: string;
   ownerId?: string;
+  ownerName?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  sortOrder?: number;
 };
 
 type ListingForm = {
@@ -150,6 +155,7 @@ type FirebaseStatus = 'Not configured' | 'Connecting' | 'Synced' | 'Saving' | 'O
 type HomeSwipeData = {
   applications: RentalApplication[];
   conversations: Conversation[];
+  leases: LeaseDraft[];
   savedListingIds: string[];
   savedSearches: string[];
 };
@@ -238,6 +244,25 @@ const initialApplications: RentalApplication[] = [
     status: 'Submitted',
     submitted: 'April 28, 2026',
     nextStep: 'Waiting for landlord response.'
+  }
+];
+
+const initialLeases: LeaseDraft[] = [
+  {
+    id: 'lease-1',
+    property: 'Modern garden cottage, Avondale',
+    landlord: 'Tari Homes',
+    tenant: 'Rudo M.',
+    rent: '$520',
+    deposit: '$520',
+    startDate: '2026-05-15',
+    endDate: '2027-05-14',
+    utilities: 'Prepaid electricity. Water included.',
+    petPolicy: 'No pets without written consent.',
+    parking: 'Open parking for one vehicle.',
+    status: 'Sent for signing',
+    landlordSigned: true,
+    tenantSigned: false
   }
 ];
 
@@ -411,6 +436,13 @@ const uniqueListings = (listings: Listing[]) => {
   return listings.filter((listing, index, allListings) => allListings.findIndex((item) => item.id === listing.id) === index);
 };
 
+const mapListingDocument = (listingDoc: QueryDocumentSnapshot<DocumentData>): Listing => {
+  return {
+    ...(listingDoc.data() as Listing),
+    id: listingDoc.id
+  };
+};
+
 const getListingFormSummary = (form: ListingForm) => {
   const roomDetails =
     form.kind === 'stands'
@@ -486,6 +518,7 @@ export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
   const [activeConversationId, setActiveConversationId] = useState(initialConversations[0].id);
   const [applications, setApplications] = useState<RentalApplication[]>(initialApplications);
+  const [leases, setLeases] = useState<LeaseDraft[]>(initialLeases);
   const [savedSearches, setSavedSearches] = useState(['Borrowdale gated 2 bed', 'Avondale furnished cottage', 'Ruwa serviced stand']);
   const [firebaseStatus, setFirebaseStatus] = useState<FirebaseStatus>(isFirebaseConfigured ? 'Connecting' : 'Not configured');
   const hasLoadedFirebaseData = useRef(!isFirebaseConfigured);
@@ -602,12 +635,14 @@ export default function App() {
           setSavedListingIds(data.savedListingIds || []);
           setConversations(data.conversations?.length ? data.conversations : initialConversations);
           setApplications(data.applications?.length ? data.applications : initialApplications);
+          setLeases(data.leases?.length ? data.leases : initialLeases);
           setSavedSearches(data.savedSearches?.length ? data.savedSearches : ['Borrowdale gated 2 bed', 'Avondale furnished cottage', 'Ruwa serviced stand']);
         } else {
           const completeSave = beginFirebaseSave();
           setDoc(doc(firestore, 'homeswipeUsers', userDataDocId), {
             applications,
             conversations,
+            leases,
             savedListingIds,
             savedSearches
           })
@@ -634,12 +669,10 @@ export default function App() {
     }
 
     return onSnapshot(
-      firestoreQuery(collection(firestore, 'homeswipeListings'), where('host', '==', currentLandlordProfile.displayName)),
+      firestoreQuery(collection(firestore, 'homeswipeListings'), where('ownerId', '==', currentLandlordProfile.id)),
       (snapshot) => {
-        const remoteListings = snapshot.docs.map((listingDoc) => listingDoc.data() as Listing);
-        setLandlordListings((currentListings) =>
-          uniqueListings([...remoteListings, ...currentListings])
-        );
+        const remoteListings = snapshot.docs.map(mapListingDocument);
+        setLandlordListings(uniqueListings(remoteListings));
         setOptimisticListings((currentListings) =>
           currentListings.filter((localListing) => !remoteListings.some((remoteListing) => remoteListing.id === localListing.id))
         );
@@ -676,13 +709,16 @@ export default function App() {
             )
           : firestoreQuery(collection(firestore, 'homeswipeListings'), where('kind', '==', activeKind), firestoreLimit(listingsPageSize));
       const snapshot = await getDocs(listingQuery);
-      const listings = snapshot.docs.map((listingDoc) => listingDoc.data() as Listing);
+      const listings = snapshot.docs.map(mapListingDocument);
 
       if (mode === 'reset' && snapshot.empty) {
+        const seedTime = Date.now();
         await Promise.all(
           initialListings.map((listing, index) =>
             setDoc(doc(firestore, 'homeswipeListings', listing.id), {
               ...listing,
+              createdAt: seedTime - index,
+              updatedAt: seedTime - index,
               sortOrder: index
             })
           )
@@ -745,6 +781,7 @@ export default function App() {
       {
         applications,
         conversations,
+        leases,
         savedListingIds,
         savedSearches
       },
@@ -752,7 +789,7 @@ export default function App() {
     )
       .then(() => completeSave('Synced'))
       .catch(() => completeSave('Offline'));
-  }, [applications, conversations, savedListingIds, savedSearches]);
+  }, [applications, conversations, leases, savedListingIds, savedSearches]);
 
   const addListing = () => {
     const streetAddress = listingForm.location.trim();
@@ -763,6 +800,8 @@ export default function App() {
     const priceNumber = listingForm.price.replace(/[^0-9.]/g, '').trim();
     const price = `$${priceNumber}`;
     const host = currentLandlordProfile.displayName;
+    const createdAt = Date.now();
+    const listingId = `${createdAt}`;
 
     const missingFields = [
       !streetAddress ? 'street address or stand number' : '',
@@ -818,7 +857,7 @@ export default function App() {
     ].filter(Boolean);
 
     const newListing: Listing = {
-      id: `${Date.now()}`,
+      id: listingId,
       kind: listingForm.kind,
       title,
       location,
@@ -826,7 +865,9 @@ export default function App() {
       meta: derivedSummary,
       host,
       image: uploadedPhotos[0] || listingForm.image.trim() || fallbackImage,
-      photos: [uploadedPhotos[0] || listingForm.image.trim() || fallbackImage, ...uploadedPhotos.slice(1), ...galleryPhotos, fallbackImage],
+      photos: [uploadedPhotos[0] || listingForm.image.trim() || fallbackImage, ...uploadedPhotos.slice(1), ...galleryPhotos, fallbackImage].filter(
+        (photo, index, allPhotos) => allPhotos.indexOf(photo) === index
+      ),
       tag: listingForm.kind === 'rentals' ? 'New rental' : listingForm.kind === 'sales' ? 'New sale' : 'New stand',
       description: listingForm.description.trim() || `${title} is listed by ${host}. Contact the landlord to confirm viewing times, documents, and availability.`,
       amenities: listingAmenities.length > 0 ? listingAmenities : ['Direct landlord contact', 'Viewing available', 'Saved listing', 'Verified details pending'],
@@ -844,7 +885,11 @@ export default function App() {
       standTitle: listingForm.standTitle.trim(),
       standRoadAccess: listingForm.standRoadAccess.trim(),
       standZoning: listingForm.standZoning.trim(),
-      ownerId: currentLandlordProfile.id
+      ownerId: currentLandlordProfile.id,
+      ownerName: currentLandlordProfile.displayName,
+      createdAt,
+      updatedAt: createdAt,
+      sortOrder: createdAt
     };
 
     setLandlordListings((currentListings) => uniqueListings([newListing, ...currentListings]));
@@ -852,7 +897,7 @@ export default function App() {
     setAvailableListings((currentListings) => uniqueListings([newListing, ...currentListings]));
     if (db) {
       const completeSave = beginFirebaseSave();
-      setDoc(doc(db, 'homeswipeListings', newListing.id), newListing, { merge: true })
+      setDoc(doc(db, 'homeswipeListings', newListing.id), newListing)
         .then(() => completeSave('Synced'))
         .catch(() => completeSave('Offline'));
     }
@@ -866,14 +911,36 @@ export default function App() {
   };
 
   const updateListing = (updatedListing: Listing) => {
-    setLandlordListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === updatedListing.id ? updatedListing : listing))));
-    setOptimisticListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === updatedListing.id ? updatedListing : listing))));
-    setAvailableListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === updatedListing.id ? updatedListing : listing))));
-    setSelectedListing((currentListing) => (currentListing?.id === updatedListing.id ? updatedListing : currentListing));
+    const storedListing: Listing = {
+      ...updatedListing,
+      ownerId: updatedListing.ownerId || currentLandlordProfile.id,
+      ownerName: updatedListing.ownerName || currentLandlordProfile.displayName,
+      updatedAt: Date.now()
+    };
+
+    setLandlordListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === storedListing.id ? storedListing : listing))));
+    setOptimisticListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === storedListing.id ? storedListing : listing))));
+    setAvailableListings((currentListings) => uniqueListings(currentListings.map((listing) => (listing.id === storedListing.id ? storedListing : listing))));
+    setSelectedListing((currentListing) => (currentListing?.id === storedListing.id ? storedListing : currentListing));
 
     if (db) {
       const completeSave = beginFirebaseSave();
-      setDoc(doc(db, 'homeswipeListings', updatedListing.id), updatedListing, { merge: true })
+      setDoc(doc(db, 'homeswipeListings', storedListing.id), storedListing, { merge: true })
+        .then(() => completeSave('Synced'))
+        .catch(() => completeSave('Offline'));
+    }
+  };
+
+  const deleteListing = (listingId: string) => {
+    setLandlordListings((currentListings) => currentListings.filter((listing) => listing.id !== listingId));
+    setOptimisticListings((currentListings) => currentListings.filter((listing) => listing.id !== listingId));
+    setAvailableListings((currentListings) => currentListings.filter((listing) => listing.id !== listingId));
+    setSavedListingIds((currentIds) => currentIds.filter((id) => id !== listingId));
+    setSelectedListing((currentListing) => (currentListing?.id === listingId ? null : currentListing));
+
+    if (db) {
+      const completeSave = beginFirebaseSave();
+      deleteDoc(doc(db, 'homeswipeListings', listingId))
         .then(() => completeSave('Synced'))
         .catch(() => completeSave('Offline'));
     }
@@ -1070,7 +1137,7 @@ export default function App() {
             setShowListingForm={setShowListingForm}
           />
         )}
-        {activeTab === 'tools' && <ToolsScreen />}
+        {activeTab === 'tools' && <ToolsScreen leases={leases} setLeases={setLeases} />}
         {activeTab === 'messages' && (
           <MessagesScreen
             activeConversationId={activeConversationId}
@@ -1093,6 +1160,7 @@ export default function App() {
             onRemoveSavedSearch={removeSavedSearch}
             onSaveCurrentSearch={saveCurrentSearch}
             onToggleSavedListing={toggleSavedListing}
+            onDeleteListing={deleteListing}
             onUpdateListing={updateListing}
           />
         )}
@@ -1954,7 +2022,13 @@ function ListingDetails({
   );
 }
 
-function ToolsScreen() {
+function ToolsScreen({
+  leases,
+  setLeases
+}: {
+  leases: LeaseDraft[];
+  setLeases: React.Dispatch<React.SetStateAction<LeaseDraft[]>>;
+}) {
   const [activeTool, setActiveTool] = useState<'screening' | 'reviews' | 'leases'>('leases');
   const [leaseForm, setLeaseForm] = useState<Omit<LeaseDraft, 'id' | 'status' | 'landlordSigned' | 'tenantSigned'>>({
     property: 'Sunny 2 bed apartment, Borrowdale',
@@ -1968,24 +2042,7 @@ function ToolsScreen() {
     petPolicy: 'Small pets allowed with written approval.',
     parking: 'One covered parking bay included.'
   });
-  const [leases, setLeases] = useState<LeaseDraft[]>([
-    {
-      id: 'lease-1',
-      property: 'Modern garden cottage, Avondale',
-      landlord: 'Tari Homes',
-      tenant: 'Rudo M.',
-      rent: '$520',
-      deposit: '$520',
-      startDate: '2026-05-15',
-      endDate: '2027-05-14',
-      utilities: 'Prepaid electricity. Water included.',
-      petPolicy: 'No pets without written consent.',
-      parking: 'Open parking for one vehicle.',
-      status: 'Sent for signing',
-      landlordSigned: true,
-      tenantSigned: false
-    }
-  ]);
+  const [leaseError, setLeaseError] = useState('');
 
   const tools = [
     {
@@ -2009,18 +2066,36 @@ function ToolsScreen() {
   ];
 
   const createLease = () => {
-    if (!leaseForm.property.trim() || !leaseForm.landlord.trim() || !leaseForm.tenant.trim() || !leaseForm.rent.trim()) {
+    const missingFields = [
+      !leaseForm.property.trim() ? 'property' : '',
+      !leaseForm.landlord.trim() ? 'landlord' : '',
+      !leaseForm.tenant.trim() ? 'tenant' : '',
+      !leaseForm.rent.trim() ? 'monthly rent' : ''
+    ].filter(Boolean);
+
+    if (missingFields.length > 0) {
+      setLeaseError(`Add ${missingFields.join(', ')} before generating the lease.`);
       return;
     }
 
     const lease: LeaseDraft = {
-      ...leaseForm,
+      property: leaseForm.property.trim(),
+      landlord: leaseForm.landlord.trim(),
+      tenant: leaseForm.tenant.trim(),
+      rent: leaseForm.rent.trim(),
+      deposit: leaseForm.deposit.trim() || 'No deposit recorded',
+      startDate: leaseForm.startDate.trim() || 'Start date to be confirmed',
+      endDate: leaseForm.endDate.trim() || 'End date to be confirmed',
+      utilities: leaseForm.utilities.trim() || 'Utilities to be agreed in writing.',
+      petPolicy: leaseForm.petPolicy.trim() || 'Pet policy to be agreed in writing.',
+      parking: leaseForm.parking.trim() || 'Parking to be agreed in writing.',
       id: `${Date.now()}`,
       status: 'Draft',
       landlordSigned: false,
       tenantSigned: false
     };
 
+    setLeaseError('');
     setLeases((currentLeases) => [lease, ...currentLeases]);
   };
 
@@ -2033,7 +2108,12 @@ function ToolsScreen() {
 
         const nextLease = { ...lease, ...update };
         const signaturesComplete = nextLease.landlordSigned && nextLease.tenantSigned;
-        const status = signaturesComplete ? 'Completed' : nextLease.status === 'Completed' ? 'Sent for signing' : nextLease.status;
+        const hasSignature = nextLease.landlordSigned || nextLease.tenantSigned;
+        const status = signaturesComplete
+          ? 'Completed'
+          : nextLease.status === 'Completed' || hasSignature
+            ? 'Sent for signing'
+            : nextLease.status;
         return { ...nextLease, status };
       })
     );
@@ -2098,11 +2178,17 @@ function ToolsScreen() {
               </View>
               <Ionicons name="document-lock-outline" size={28} color="#0f766e" />
             </View>
+            {leaseError ? (
+              <View style={styles.publishError}>
+                <Ionicons name="alert-circle-outline" size={18} color="#b91c1c" />
+                <Text style={styles.publishErrorText}>{leaseError}</Text>
+              </View>
+            ) : null}
             <View style={styles.formGrid}>
-              <LeaseInput label="Property" value={leaseForm.property} onChangeText={(property) => setLeaseForm((current) => ({ ...current, property }))} />
-              <LeaseInput label="Landlord" value={leaseForm.landlord} onChangeText={(landlord) => setLeaseForm((current) => ({ ...current, landlord }))} />
-              <LeaseInput label="Tenant" value={leaseForm.tenant} onChangeText={(tenant) => setLeaseForm((current) => ({ ...current, tenant }))} />
-              <LeaseInput label="Monthly rent" value={leaseForm.rent} onChangeText={(rent) => setLeaseForm((current) => ({ ...current, rent }))} />
+              <LeaseInput label="Property" value={leaseForm.property} onChangeText={(property) => { setLeaseError(''); setLeaseForm((current) => ({ ...current, property })); }} />
+              <LeaseInput label="Landlord" value={leaseForm.landlord} onChangeText={(landlord) => { setLeaseError(''); setLeaseForm((current) => ({ ...current, landlord })); }} />
+              <LeaseInput label="Tenant" value={leaseForm.tenant} onChangeText={(tenant) => { setLeaseError(''); setLeaseForm((current) => ({ ...current, tenant })); }} />
+              <LeaseInput label="Monthly rent" value={leaseForm.rent} onChangeText={(rent) => { setLeaseError(''); setLeaseForm((current) => ({ ...current, rent })); }} />
               <LeaseInput label="Deposit" value={leaseForm.deposit} onChangeText={(deposit) => setLeaseForm((current) => ({ ...current, deposit }))} />
               <LeaseInput label="Start date" value={leaseForm.startDate} onChangeText={(startDate) => setLeaseForm((current) => ({ ...current, startDate }))} />
               <LeaseInput label="End date" value={leaseForm.endDate} onChangeText={(endDate) => setLeaseForm((current) => ({ ...current, endDate }))} />
@@ -2301,6 +2387,7 @@ function ProfileScreen({
   onRemoveSavedSearch,
   onSaveCurrentSearch,
   onToggleSavedListing,
+  onDeleteListing,
   onUpdateListing
 }: {
   applications: RentalApplication[];
@@ -2315,10 +2402,12 @@ function ProfileScreen({
   onRemoveSavedSearch: (search: string) => void;
   onSaveCurrentSearch: (search: string) => void;
   onToggleSavedListing: (listingId: string) => void;
+  onDeleteListing: (listingId: string) => void;
   onUpdateListing: (listing: Listing) => void;
 }) {
   const [profileView, setProfileView] = useState<ProfileView>('overview');
   const [editingListingId, setEditingListingId] = useState<string | null>(null);
+  const [deleteConfirmListingId, setDeleteConfirmListingId] = useState<string | null>(null);
   const [listingDraft, setListingDraft] = useState({
     title: '',
     location: '',
@@ -2375,6 +2464,7 @@ function ProfileScreen({
 
   const startEditingListing = (listing: Listing) => {
     setEditingListingId(listing.id);
+    setDeleteConfirmListingId(null);
     setListingDraft({
       title: listing.title,
       location: listing.location,
@@ -2397,6 +2487,17 @@ function ProfileScreen({
 
     onUpdateListing(updatedListing);
     setEditingListingId(null);
+  };
+
+  const requestDeleteListing = (listingId: string) => {
+    if (deleteConfirmListingId === listingId) {
+      onDeleteListing(listingId);
+      setDeleteConfirmListingId(null);
+      return;
+    }
+
+    setEditingListingId(null);
+    setDeleteConfirmListingId(listingId);
   };
 
   return (
@@ -2541,6 +2642,10 @@ function ProfileScreen({
                         <Pressable style={styles.primaryButton} onPress={() => startEditingListing(listing)}>
                           <Ionicons name="create-outline" size={18} color="#ffffff" />
                           <Text style={styles.primaryButtonText}>Edit listing</Text>
+                        </Pressable>
+                        <Pressable style={styles.dangerButton} onPress={() => requestDeleteListing(listing.id)}>
+                          <Ionicons name={deleteConfirmListingId === listing.id ? 'alert-circle-outline' : 'trash-outline'} size={18} color="#b91c1c" />
+                          <Text style={styles.dangerButtonText}>{deleteConfirmListingId === listing.id ? 'Confirm delete' : 'Delete'}</Text>
                         </Pressable>
                       </View>
                     </>
@@ -3569,6 +3674,23 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: {
     color: '#0f766e',
+    fontSize: 14,
+    fontWeight: '900'
+  },
+  dangerButton: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    backgroundColor: '#fef2f2'
+  },
+  dangerButtonText: {
+    color: '#b91c1c',
     fontSize: 14,
     fontWeight: '900'
   },
