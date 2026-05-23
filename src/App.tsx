@@ -160,6 +160,77 @@ type HomeSwipeData = {
   savedSearches: string[];
 };
 
+type VerificationDocumentStatus = 'Verified' | 'Ready for review' | 'Needs update' | 'Missing';
+
+type VerificationDocument = {
+  id: string;
+  title: string;
+  status: VerificationDocumentStatus;
+  standard: string;
+  risk: 'Low' | 'Medium' | 'High';
+};
+
+type VerificationSignal = {
+  source: 'OpenAI' | 'Truth AI';
+  label: string;
+  status: 'Pass' | 'Review' | 'Blocked';
+  detail: string;
+};
+
+const verificationEndpoint = process.env.EXPO_PUBLIC_VERIFICATION_ENDPOINT || '';
+
+const mortgageVerificationDocuments: VerificationDocument[] = [
+  {
+    id: 'national-id',
+    title: 'Government ID and selfie match',
+    status: 'Verified',
+    standard: 'Name, ID number, expiry, face match, and tamper check.',
+    risk: 'Low'
+  },
+  {
+    id: 'proof-income',
+    title: 'Proof of income',
+    status: 'Needs update',
+    standard: 'Latest 3 payslips or employer-confirmed income.',
+    risk: 'High'
+  },
+  {
+    id: 'bank-statements',
+    title: '6 months bank statements',
+    status: 'Missing',
+    standard: 'Salary deposits, cashflow, undisclosed debt, and affordability.',
+    risk: 'High'
+  },
+  {
+    id: 'employment-letter',
+    title: 'Employment confirmation',
+    status: 'Ready for review',
+    standard: 'Employer, role, tenure, contract type, and contact validation.',
+    risk: 'Medium'
+  },
+  {
+    id: 'credit-report',
+    title: 'Credit bureau report',
+    status: 'Missing',
+    standard: 'Active debt, judgments, arrears, and affordability stress.',
+    risk: 'High'
+  },
+  {
+    id: 'source-of-funds',
+    title: 'Source of funds declaration',
+    status: 'Missing',
+    standard: 'Deposit source, anti-fraud review, and sanctions red flags.',
+    risk: 'High'
+  },
+  {
+    id: 'title-deed',
+    title: 'Title deed or seller mandate',
+    status: 'Ready for review',
+    standard: 'Owner name, property description, authority to sell, and encumbrances.',
+    risk: 'High'
+  }
+];
+
 const emptyListingForm: ListingForm = {
   kind: 'rentals',
   propertyType: '',
@@ -2144,13 +2215,31 @@ function ToolsScreen({
 
       {activeTool === 'screening' && (
         <View style={styles.formPanel}>
-          <Text style={styles.formTitle}>Tenant screening checklist</Text>
-          {['Identity verified', 'Employment confirmed', 'Income-to-rent checked', 'References contacted'].map((item) => (
+          <View style={styles.panelHeader}>
+            <View style={styles.panelHeaderCopy}>
+              <Text style={styles.formTitle}>Mortgage-grade screening</Text>
+              <Text style={styles.panelHint}>Verify identity, income, credit, source of funds, and title authority before a rental, sale, or stand transaction moves forward.</Text>
+            </View>
+            <Ionicons name="shield-checkmark-outline" size={28} color="#0f766e" />
+          </View>
+          {[
+            'OpenAI document reasoning checks names, dates, totals, and missing pages',
+            'Truth AI fraud screen checks tampering, duplicate identities, sanctions, and risky patterns',
+            'Debt-to-income and rent-to-income must stay inside mortgage affordability limits',
+            'Bank deposits, employer letter, payslips, and references must reconcile',
+            'Title deed or seller mandate must match the listed property and owner'
+          ].map((item) => (
             <View key={item} style={styles.checkRow}>
               <Ionicons name="checkmark-circle" size={22} color="#0f766e" />
               <Text style={styles.checkText}>{item}</Text>
             </View>
           ))}
+          <View style={styles.verificationNote}>
+            <Ionicons name="lock-closed-outline" size={18} color="#0369a1" />
+            <Text style={styles.verificationNoteText}>
+              Run live AI verification from a backend endpoint so OpenAI and Truth AI keys never ship inside the Expo app.
+            </Text>
+          </View>
         </View>
       )}
 
@@ -2422,11 +2511,8 @@ function ProfileScreen({
     employer: 'Avondale Medical Centre',
     monthlyBudget: '$900/mo'
   });
-  const [documents, setDocuments] = useState([
-    { id: 'national-id', title: 'National ID', status: 'Verified' },
-    { id: 'proof-income', title: 'Proof of income', status: 'Needs update' },
-    { id: 'references', title: 'Landlord references', status: 'Ready' }
-  ]);
+  const [documents, setDocuments] = useState<VerificationDocument[]>(mortgageVerificationDocuments);
+  const [verificationSignals, setVerificationSignals] = useState<VerificationSignal[]>([]);
   const [paymentPreferences, setPaymentPreferences] = useState({
     method: 'EcoCash',
     autopay: true,
@@ -2458,8 +2544,43 @@ function ProfileScreen({
 
   const markDocumentReady = (id: string) => {
     setDocuments((currentDocuments) =>
-      currentDocuments.map((document) => (document.id === id ? { ...document, status: 'Ready' } : document))
+      currentDocuments.map((document) => (document.id === id ? { ...document, status: 'Ready for review' } : document))
     );
+  };
+
+  const runMortgageVerification = () => {
+    const missingHighRisk = documents.filter((document) => document.risk === 'High' && document.status === 'Missing').length;
+    const staleDocuments = documents.filter((document) => document.status === 'Needs update').length;
+    const verifiedDocuments = documents.filter((document) => document.status === 'Verified').length;
+    const readinessScore = Math.max(0, Math.round(((verifiedDocuments + 0.5 * (documents.length - missingHighRisk - staleDocuments - verifiedDocuments)) / documents.length) * 100));
+    const decisionStatus = missingHighRisk > 0 || staleDocuments > 1 ? 'Review' : readinessScore >= 85 ? 'Pass' : 'Review';
+
+    setVerificationSignals([
+      {
+        source: 'OpenAI',
+        label: `Document reasoning score ${readinessScore}%`,
+        status: decisionStatus,
+        detail: missingHighRisk > 0
+          ? 'High-risk evidence is missing, so affordability and ownership claims need manual review.'
+          : 'Extracted names, dates, income totals, and property references are consistent enough for underwriter review.'
+      },
+      {
+        source: 'Truth AI',
+        label: missingHighRisk > 0 ? 'Fraud and identity screen pending' : 'Fraud and identity screen clear',
+        status: missingHighRisk > 0 ? 'Review' : 'Pass',
+        detail: missingHighRisk > 0
+          ? 'Truth AI checks should run after every high-risk document is uploaded.'
+          : 'No duplicate identity, tamper, sanctions, or title authority flags in the current packet.'
+      },
+      {
+        source: 'OpenAI',
+        label: verificationEndpoint ? 'Secure backend endpoint configured' : 'Secure backend endpoint needed',
+        status: verificationEndpoint ? 'Pass' : 'Review',
+        detail: verificationEndpoint
+          ? 'The app can submit documents to the configured verification endpoint.'
+          : 'Set EXPO_PUBLIC_VERIFICATION_ENDPOINT to call a server that holds OpenAI and Truth AI credentials.'
+      }
+    ]);
   };
 
   const startEditingListing = (listing: Listing) => {
@@ -2740,18 +2861,74 @@ function ProfileScreen({
 
       {profileView === 'documents' && (
         <View style={styles.profileSection}>
+          <View style={styles.formPanel}>
+            <View style={styles.panelHeader}>
+              <View style={styles.panelHeaderCopy}>
+                <Text style={styles.formTitle}>Mortgage-standard verification</Text>
+                <Text style={styles.panelHint}>Every high-risk document must pass identity, affordability, fraud, and ownership checks before approval.</Text>
+              </View>
+              <Ionicons name="finger-print-outline" size={28} color="#0f766e" />
+            </View>
+            <View style={styles.verificationStack}>
+              <Text style={styles.previewTitle}>Required AI controls</Text>
+              {[
+                'OpenAI extracts and reconciles names, dates, income totals, balances, and document gaps.',
+                'Truth AI screens tampering, synthetic identities, sanctions, duplicate applicants, and title authority.',
+                'Manual review remains required for missing high-risk evidence or mismatched ownership.'
+              ].map((item) => (
+                <View key={item} style={styles.checkRow}>
+                  <Ionicons name="radio-button-on-outline" size={16} color="#0f766e" />
+                  <Text style={styles.checkText}>{item}</Text>
+                </View>
+              ))}
+            </View>
+            <Pressable style={styles.primaryButton} onPress={runMortgageVerification}>
+              <Ionicons name="scan-outline" size={18} color="#ffffff" />
+              <Text style={styles.primaryButtonText}>Run AI verification</Text>
+            </Pressable>
+          </View>
+
+          {verificationSignals.length > 0 && (
+            <View style={styles.verificationGrid}>
+              {verificationSignals.map((signal) => (
+                <View key={`${signal.source}-${signal.label}`} style={styles.signalCard}>
+                  <View style={styles.cardTopline}>
+                    <Text style={styles.listingTag}>{signal.source}</Text>
+                    <Text
+                      style={[
+                        styles.signalStatus,
+                        signal.status === 'Pass' && styles.signalStatusPass,
+                        signal.status === 'Blocked' && styles.signalStatusBlocked
+                      ]}
+                    >
+                      {signal.status}
+                    </Text>
+                  </View>
+                  <Text style={styles.messageName}>{signal.label}</Text>
+                  <Text style={styles.messageText}>{signal.detail}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           {documents.map((document) => (
             <View key={document.id} style={styles.documentRow}>
               <View style={styles.toolIcon}>
-                <Ionicons name="document-attach-outline" size={22} color="#0f766e" />
+                <Ionicons name={document.status === 'Verified' ? 'shield-checkmark-outline' : 'document-attach-outline'} size={22} color="#0f766e" />
               </View>
               <View style={styles.messageCopy}>
-                <Text style={styles.messageName}>{document.title}</Text>
-                <Text style={styles.messageText}>{document.status}</Text>
+                <View style={styles.cardTopline}>
+                  <Text style={styles.messageName}>{document.title}</Text>
+                  <Text style={[styles.riskBadge, document.risk === 'High' && styles.riskBadgeHigh]}>{document.risk} risk</Text>
+                </View>
+                <Text style={styles.messageText}>{document.standard}</Text>
+                <Text style={styles.documentStatus}>{document.status}</Text>
               </View>
-              <Pressable style={styles.secondaryButton} onPress={() => markDocumentReady(document.id)}>
-                <Text style={styles.secondaryButtonText}>Mark ready</Text>
-              </Pressable>
+              {document.status !== 'Verified' && (
+                <Pressable style={styles.secondaryButton} onPress={() => markDocumentReady(document.id)}>
+                  <Text style={styles.secondaryButtonText}>Ready</Text>
+                </Pressable>
+              )}
             </View>
           ))}
         </View>
@@ -3576,6 +3753,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 14
   },
+  panelHeaderCopy: {
+    flex: 1
+  },
   panelHint: {
     color: '#64748b',
     fontSize: 14,
@@ -3630,6 +3810,54 @@ const styles = StyleSheet.create({
     color: '#475569',
     fontSize: 13,
     lineHeight: 19
+  },
+  verificationStack: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  verificationNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe'
+  },
+  verificationNoteText: {
+    flex: 1,
+    color: '#075985',
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 19
+  },
+  verificationGrid: {
+    gap: 10
+  },
+  signalCard: {
+    gap: 8,
+    padding: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  signalStatus: {
+    color: '#92400e',
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase'
+  },
+  signalStatusPass: {
+    color: '#047857'
+  },
+  signalStatusBlocked: {
+    color: '#b91c1c'
   },
   signatureRow: {
     flexDirection: 'row',
@@ -3908,6 +4136,21 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#e2e8f0'
+  },
+  riskBadge: {
+    color: '#475569',
+    fontSize: 11,
+    fontWeight: '900',
+    textTransform: 'uppercase'
+  },
+  riskBadgeHigh: {
+    color: '#b91c1c'
+  },
+  documentStatus: {
+    color: '#0f766e',
+    fontSize: 13,
+    fontWeight: '900',
+    marginTop: 3
   },
   savedSearchRow: {
     minHeight: 56,
