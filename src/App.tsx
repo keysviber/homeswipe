@@ -18,6 +18,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import * as ImagePicker from 'expo-image-picker';
 import { Image as CompressorImage } from 'react-native-compressor';
 import { launchImageLibrary } from 'react-native-image-picker';
+import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
@@ -32,7 +33,7 @@ import {
   startAfter,
   where
 } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from './firebase';
+import { auth, db, isFirebaseConfigured } from './firebase';
 
 type TabKey = 'home' | 'tools' | 'messages' | 'profile';
 type ListingKind = 'rentals' | 'sales' | 'stands';
@@ -151,6 +152,11 @@ type HomeFilters = {
 };
 
 type FirebaseStatus = 'Not configured' | 'Connecting' | 'Synced' | 'Saving' | 'Offline';
+
+type UserProfile = {
+  id: string;
+  displayName: string;
+};
 
 type HomeSwipeData = {
   applications: RentalApplication[];
@@ -473,11 +479,9 @@ const listingFilters: { key: ListingKind; label: string }[] = [
   { key: 'stands', label: 'Stands' }
 ];
 
-const userDataDocId = 'demo-user';
-
-const currentLandlordProfile = {
-  id: userDataDocId,
-  displayName: 'Tendai Ndlovu'
+const localUserProfile: UserProfile = {
+  id: 'local-user',
+  displayName: 'HomeSwipe User'
 };
 
 const listingFeatureOptions = ['Gated', 'Solar backup', 'Borehole', 'Parking', 'Furnished', 'Wi-Fi ready'];
@@ -577,6 +581,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   const [activeKind, setActiveKind] = useState<ListingKind>('rentals');
   const [query, setQuery] = useState('');
+  const [currentLandlordProfile, setCurrentLandlordProfile] = useState<UserProfile>(localUserProfile);
   const [availableListings, setAvailableListings] = useState<Listing[]>(initialListings);
   const [showListingForm, setShowListingForm] = useState(false);
   const [showHomeFilters, setShowHomeFilters] = useState(false);
@@ -601,6 +606,8 @@ export default function App() {
   const [lastListingDoc, setLastListingDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
   const [isLoadingListings, setIsLoadingListings] = useState(false);
   const [hasMoreListings, setHasMoreListings] = useState(true);
+  const isFirebaseUserReady = !auth || currentLandlordProfile.id !== localUserProfile.id;
+  const userDataDocId = currentLandlordProfile.id;
 
   const filteredListings = useMemo(() => {
     return availableListings.filter((listing) => {
@@ -684,6 +691,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const firebaseAuth = auth;
+    if (!firebaseAuth) {
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
+      if (user) {
+        setCurrentLandlordProfile({
+          id: user.uid,
+          displayName: user.displayName || 'HomeSwipe User'
+        });
+      }
+    });
+
+    signInAnonymously(firebaseAuth).catch(() => setFirebaseStatus('Offline'));
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
     return () => {
       if (firebaseSaveTimer.current) {
         clearTimeout(firebaseSaveTimer.current);
@@ -693,7 +720,7 @@ export default function App() {
 
   useEffect(() => {
     const firestore = db;
-    if (!firestore) {
+    if (!firestore || !isFirebaseUserReady) {
       return;
     }
 
@@ -731,11 +758,11 @@ export default function App() {
     );
 
     return unsubscribe;
-  }, []);
+  }, [isFirebaseUserReady, userDataDocId]);
 
   useEffect(() => {
     const firestore = db;
-    if (!firestore) {
+    if (!firestore || !isFirebaseUserReady) {
       return;
     }
 
@@ -750,7 +777,7 @@ export default function App() {
       },
       () => setFirebaseStatus('Offline')
     );
-  }, []);
+  }, [currentLandlordProfile.id, isFirebaseUserReady]);
 
   const loadListingsPage = async (mode: 'reset' | 'more') => {
     const firestore = db;
@@ -837,7 +864,7 @@ export default function App() {
 
   useEffect(() => {
     const firestore = db;
-    if (!firestore || !hasLoadedFirebaseData.current) {
+    if (!firestore || !isFirebaseUserReady || !hasLoadedFirebaseData.current) {
       return;
     }
 
@@ -860,7 +887,7 @@ export default function App() {
     )
       .then(() => completeSave('Synced'))
       .catch(() => completeSave('Offline'));
-  }, [applications, conversations, leases, savedListingIds, savedSearches]);
+  }, [applications, conversations, leases, isFirebaseUserReady, savedListingIds, savedSearches, userDataDocId]);
 
   const addListing = () => {
     const streetAddress = listingForm.location.trim();

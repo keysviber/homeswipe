@@ -4,19 +4,48 @@
     "slug": "homeswipe",
     "version": "0.1.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "scheme": "homeswipe",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.homeswipe.app",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "HomeSwipe lets you choose property photos for listings you publish."
+      }
     },
     "android": {
+      "package": "com.homeswipe.app",
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f766e"
       }
     },
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f7f8ee"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "HomeSwipe lets you choose property photos for listings you publish.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ]
+    ],
     "web": {
       "bundler": "metro",
       "output": "single"
