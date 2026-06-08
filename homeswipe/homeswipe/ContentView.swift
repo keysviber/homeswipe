@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 
 struct ContentView: View {
     @State private var store = HomeSwipeStore()
@@ -35,10 +36,13 @@ struct ContentView: View {
                 onToggleSaved: { store.toggleSaved(listing) }
             )
         }
+        .task {
+            await store.startFirebase()
+        }
     }
 }
 
-enum AppTab: String, CaseIterable, Identifiable {
+enum AppTab: String, CaseIterable, Identifiable, Codable {
     case home = "Home"
     case tools = "Tools"
     case messages = "Messages"
@@ -60,7 +64,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     }
 }
 
-enum ListingKind: String, CaseIterable, Identifiable {
+enum ListingKind: String, CaseIterable, Identifiable, Codable {
     case rentals = "Rentals"
     case sales = "For sale"
     case stands = "Stands"
@@ -68,7 +72,7 @@ enum ListingKind: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum ProfileView: String, CaseIterable, Identifiable {
+enum ProfileView: String, CaseIterable, Identifiable, Codable {
     case overview
     case saved
     case applications
@@ -93,7 +97,7 @@ enum ProfileView: String, CaseIterable, Identifiable {
     }
 }
 
-struct Listing: Identifiable, Hashable {
+struct Listing: Identifiable, Hashable, Codable {
     let id: String
     let kind: ListingKind
     var title: String
@@ -108,7 +112,7 @@ struct Listing: Identifiable, Hashable {
     var details: [String]
 }
 
-struct Conversation: Identifiable, Hashable {
+struct Conversation: Identifiable, Hashable, Codable {
     let id: String
     let person: String
     let role: String
@@ -117,7 +121,7 @@ struct Conversation: Identifiable, Hashable {
     var messages: [String]
 }
 
-struct RentalApplication: Identifiable, Hashable {
+struct RentalApplication: Identifiable, Hashable, Codable {
     let id: String
     let listingID: String
     let property: String
@@ -127,7 +131,7 @@ struct RentalApplication: Identifiable, Hashable {
     let nextStep: String
 }
 
-struct LeaseDraft: Identifiable, Hashable {
+struct LeaseDraft: Identifiable, Hashable, Codable {
     let id: String
     let property: String
     let landlord: String
@@ -144,7 +148,7 @@ struct LeaseDraft: Identifiable, Hashable {
     var tenantSigned: Bool
 }
 
-struct VerificationDocument: Identifiable, Hashable {
+struct VerificationDocument: Identifiable, Hashable, Codable {
     let id: String
     let title: String
     var status: String
@@ -178,8 +182,14 @@ struct HomeFilters {
     var savedOnly = false
 }
 
+@MainActor
 @Observable
 final class HomeSwipeStore {
+    @ObservationIgnored
+    private let firebase = FirebaseService()
+    @ObservationIgnored
+    private var didStartFirebase = false
+
     var activeTab: AppTab = .home
     var activeKind: ListingKind = .rentals
     var activeProfileView: ProfileView = .overview
@@ -188,7 +198,7 @@ final class HomeSwipeStore {
     var showFilters = false
     var showAddListing = false
     var listingDraft = ListingDraft()
-    var firebaseStatus = "Synced"
+    var firebaseStatus = "Not configured"
     var selectedListing: Listing?
     var savedListingIDs: Set<String> = ["1", "4"]
     var activeConversationID = "moyo-properties"
@@ -368,12 +378,58 @@ final class HomeSwipeStore {
         conversations.first(where: { $0.id == activeConversationID }) ?? conversations.first
     }
 
+    private var currentUserData: HomeSwipeUserData {
+        HomeSwipeUserData(
+            applications: applications,
+            conversations: conversations,
+            leases: leases,
+            savedListingIDs: Array(savedListingIDs),
+            savedSearches: savedSearches
+        )
+    }
+
+    func startFirebase() async {
+        guard !didStartFirebase else { return }
+        didStartFirebase = true
+
+        let configured = firebase.isConfigured()
+        guard configured else {
+            firebaseStatus = "Not configured"
+            return
+        }
+
+        firebaseStatus = "Connecting"
+
+        do {
+            let remoteState = try await firebase.connectAndLoad()
+
+            if !remoteState.listings.isEmpty {
+                listings = mergeListings(local: listings, remote: remoteState.listings)
+            }
+
+            if let userData = remoteState.userData {
+                applications = userData.applications
+                conversations = userData.conversations
+                leases = userData.leases
+                savedListingIDs = Set(userData.savedListingIDs)
+                savedSearches = userData.savedSearches
+            } else {
+                try await firebase.saveUserData(currentUserData)
+            }
+
+            firebaseStatus = "Synced"
+        } catch {
+            firebaseStatus = "Offline"
+        }
+    }
+
     func toggleSaved(_ listing: Listing) {
         if savedListingIDs.contains(listing.id) {
             savedListingIDs.remove(listing.id)
         } else {
             savedListingIDs.insert(listing.id)
         }
+        syncUserData()
     }
 
     func addListing() {
@@ -399,6 +455,8 @@ final class HomeSwipeStore {
         listings.insert(listing, at: 0)
         showAddListing = false
         listingDraft = ListingDraft()
+        syncUserData()
+        syncListing(listing)
     }
 
     func sendReply() {
@@ -409,6 +467,7 @@ final class HomeSwipeStore {
 
         conversations[index].messages.append(trimmed)
         replyDraft = ""
+        syncUserData()
     }
 
     func markDocumentReady(_ document: VerificationDocument) {
@@ -433,6 +492,50 @@ final class HomeSwipeStore {
                 detail: missingHighRisk > 0 ? "Truth AI checks should run after every high-risk document is uploaded." : "No duplicate identity, tamper, or title authority flags are visible in the current packet."
             )
         ]
+    }
+
+    private func syncUserData() {
+        guard firebaseStatus != "Not configured" else { return }
+        let payload = currentUserData
+        firebaseStatus = "Saving"
+
+        Task {
+            do {
+                try await firebase.saveUserData(payload)
+                await MainActor.run {
+                    firebaseStatus = "Synced"
+                }
+            } catch {
+                await MainActor.run {
+                    firebaseStatus = "Offline"
+                }
+            }
+        }
+    }
+
+    private func syncListing(_ listing: Listing) {
+        guard firebaseStatus != "Not configured" else { return }
+
+        Task {
+            do {
+                try await firebase.saveListing(listing)
+                await MainActor.run {
+                    firebaseStatus = "Synced"
+                }
+            } catch {
+                await MainActor.run {
+                    firebaseStatus = "Offline"
+                }
+            }
+        }
+    }
+
+    private func mergeListings(local: [Listing], remote: [Listing]) -> [Listing] {
+        var merged = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
+        for listing in remote {
+            merged[listing.id] = listing
+        }
+        return Array(merged.values)
     }
 
     private func numberValue(in text: String) -> Double {
