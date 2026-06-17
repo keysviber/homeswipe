@@ -1,38 +1,45 @@
 import SwiftUI
 import Observation
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @State private var store = HomeSwipeStore()
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color(hex: "#f8fafc")
-                .ignoresSafeArea()
+        ZStack {
+            Color(hex: "#f8fafc").ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                Group {
-                    switch store.activeTab {
-                    case .home:
-                        HomeScreen(store: $store)
-                    case .tools:
-                        ToolsScreen(store: $store)
-                    case .messages:
-                        MessagesScreen(store: $store)
-                    case .profile:
-                        ProfileScreen(store: $store)
+            if store.didCompleteOnboarding {
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 0) {
+                        Group {
+                            switch store.activeTab {
+                            case .home:
+                                HomeScreen(store: $store)
+                            case .tools:
+                                ToolsScreen(store: $store)
+                            case .messages:
+                                MessagesScreen(store: $store)
+                            case .profile:
+                                ProfileScreen(store: $store)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        Spacer(minLength: 92)
                     }
+
+                    BottomTabBar(activeTab: $store.activeTab)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                Spacer(minLength: 92)
+            } else {
+                OnboardingScreen(store: $store)
             }
-
-            BottomTabBar(activeTab: $store.activeTab)
         }
         .sheet(item: $store.selectedListing) { listing in
             ListingDetailView(
                 listing: listing,
                 isSaved: store.savedListingIDs.contains(listing.id),
+                affordabilityProfile: store.affordabilityProfileContext,
                 onToggleSaved: { store.toggleSaved(listing) }
             )
         }
@@ -40,6 +47,28 @@ struct ContentView: View {
             await store.startFirebase()
         }
     }
+}
+
+enum OnboardingRole: String, CaseIterable, Identifiable, Codable {
+    case tenant = "Looking for a Home"
+    case lister = "Listing Property"
+
+    var id: String { rawValue }
+
+    var profileLabel: String {
+        switch self {
+        case .tenant:
+            return "Tenant"
+        case .lister:
+            return "Lister"
+        }
+    }
+}
+
+enum VerificationState: String, Codable {
+    case notVerified = "Not Verified"
+    case pendingReview = "Pending Review"
+    case verified = "Verified"
 }
 
 enum AppTab: String, CaseIterable, Identifiable, Codable {
@@ -90,7 +119,7 @@ enum ProfileView: String, CaseIterable, Identifiable, Codable {
         case .applications:
             return "Applications"
         case .documents:
-            return "Verification documents"
+            return "Verification Center"
         case .searches:
             return "Saved searches"
         }
@@ -154,6 +183,7 @@ struct VerificationDocument: Identifiable, Hashable, Codable {
     var status: String
     let standard: String
     let risk: String
+    var fileName = ""
 }
 
 struct VerificationSignal: Identifiable, Hashable {
@@ -164,6 +194,23 @@ struct VerificationSignal: Identifiable, Hashable {
     let detail: String
 }
 
+struct AffordabilityProfileContext {
+    let monthlyIncome: Double
+    let monthlyIncomeLabel: String
+    let verificationStatus: String
+    let currentLocation: String
+    let userType: String
+}
+
+struct AffordabilityAnswers {
+    var employmentStatus = ""
+    var employer = ""
+    var yearsEmployed = ""
+    var hasLoans: Bool?
+    var loanRepayment = ""
+    var deposit = ""
+}
+
 struct ListingDraft {
     var propertyType = ""
     var spaceType = ""
@@ -171,6 +218,161 @@ struct ListingDraft {
     var area = ""
     var city = ""
     var price = ""
+}
+
+struct AccountProfileInput: Codable {
+    var fullName = ""
+    var email = ""
+    var phone = ""
+}
+
+struct TenantOnboardingInput: Codable {
+    var city = ""
+    var budget = ""
+    var propertyTypes: Set<String> = []
+    var amenities: Set<String> = []
+    var employmentStatus = ""
+    var householdTypes: Set<String> = []
+    var leasePreferences: Set<String> = []
+}
+
+struct ListerOnboardingInput: Codable {
+    var listerType = ""
+    var primaryLocation = ""
+    var propertyCount = ""
+}
+
+let verificationRoleOptions = [
+    "Landlord / Property Owner",
+    "Property Manager",
+    "Real Estate Agent",
+    "Property Developer",
+    "Estate Agency"
+]
+
+func requiredVerificationDocuments(for role: OnboardingRole?, listerType: String) -> [VerificationDocument] {
+    func document(_ id: String, _ title: String, _ standard: String) -> VerificationDocument {
+        VerificationDocument(id: id, title: title, status: "Missing", standard: standard, risk: "Required")
+    }
+
+    guard role == .lister else {
+        return [
+            document("national-id-passport", "National ID / Passport", "Upload a valid national ID or passport."),
+            document("proof-of-income", "Proof of Income", "Upload a payslip, employment letter, or bank statement."),
+            document("police-clearance", "Police Clearance Certificate", "Upload a police clearance certificate.")
+        ]
+    }
+
+    switch listerType {
+    case "Landlord / Property Owner":
+        return [
+            document("national-id-passport", "National ID / Passport", "Upload a valid national ID or passport."),
+            document("title-deed-ownership", "Title Deed or Proof of Property Ownership", "Upload a title deed or accepted proof that you own the property.")
+        ]
+    case "Property Manager":
+        return [
+            document("national-id-passport", "National ID / Passport", "Upload a valid national ID or passport."),
+            document("company-registration", "Company Registration Documents", "Upload company registration documents for the managing business."),
+            document("management-authority", "Property Management Agreement or Letter of Authority", "Upload the agreement or authority letter proving you can manage the property.")
+        ]
+    case "Real Estate Agent":
+        return [
+            document("national-id-passport", "National ID / Passport", "Upload a valid national ID or passport.")
+        ]
+    case "Property Developer":
+        return [
+            document("national-id-passport", "National ID / Passport", "Upload a valid national ID or passport."),
+            document("company-registration", "Company Registration Documents", "Upload company registration documents for the development company."),
+            document("development-permit", "Development Permit / Project Approval Documents", "Upload the development permit or approved project documents.")
+        ]
+    case "Estate Agency":
+        return [
+            document("agency-licence", "Real Estate Agency Licence", "Upload the real estate agency licence.")
+        ]
+    default:
+        return [
+            document("national-id-passport", "National ID / Passport", "Upload a valid national ID or passport.")
+        ]
+    }
+}
+
+struct LeaseDraftInput {
+    var property = ""
+    var landlord = ""
+    var tenant = ""
+    var rent = ""
+    var deposit = ""
+    var startDate = ""
+    var endDate = ""
+    var utilities = ""
+    var petPolicy = ""
+    var parking = ""
+}
+
+enum ToolKind: String, CaseIterable, Identifiable {
+    case homeLoan = "Home Loan Affordability"
+    case rentLoan = "Rent Loan"
+    case householdInsurance = "Household Insurance"
+    case propertyUpgrades = "Property Upgrades"
+    case buildingFinancing = "Building Financing"
+    case homeInsurance = "Home Insurance"
+    case leases = "Lease PDF Generator"
+
+    var id: String { rawValue }
+
+    var subtitle: String {
+        switch self {
+        case .homeLoan: return "Estimate buying power"
+        case .rentLoan: return "Rent support finance"
+        case .householdInsurance: return "Contents cover estimate"
+        case .propertyUpgrades: return "Managed upgrades finance"
+        case .buildingFinancing: return "Build-stage finance"
+        case .homeInsurance: return "Property cover estimate"
+        case .leases: return "Create and share leases"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .homeLoan: return "house"
+        case .rentLoan: return "banknote"
+        case .householdInsurance: return "shield"
+        case .propertyUpgrades: return "hammer"
+        case .buildingFinancing: return "building.2"
+        case .homeInsurance: return "lock.shield"
+        case .leases: return "doc.text"
+        }
+    }
+}
+
+struct ToolInputs {
+    var currency = "USD"
+    var income = ""
+    var loanYears = "10"
+    var deposit = ""
+    var monthlyRent = ""
+    var supportMonths = "1"
+    var repaymentMonths = "6"
+    var contentsValue = ""
+    var coverType = "Standard"
+    var upgradeType = "Solar Installation"
+    var propertyLocation = ""
+    var upgradeBudget = ""
+    var siteInspection = ""
+    var buildingStage = "Foundation"
+    var standLocation = ""
+    var buildSize = ""
+    var buildBudget = ""
+    var propertyValue = ""
+    var propertyType = "House"
+    var insuranceLocation = ""
+}
+
+struct ToolReport {
+    let title: String
+    let inputs: [(String, String)]
+    let results: [(String, String)]
+    var notes: [String] = []
 }
 
 struct HomeFilters {
@@ -189,6 +391,12 @@ final class HomeSwipeStore {
     private let firebase = FirebaseService()
     @ObservationIgnored
     private var didStartFirebase = false
+    @ObservationIgnored
+    private let onboardingCompleteKey = "homeswipe.onboarding.complete"
+    @ObservationIgnored
+    private let onboardingRoleKey = "homeswipe.onboarding.role"
+    @ObservationIgnored
+    private let verificationStateKey = "homeswipe.verification.state"
 
     var activeTab: AppTab = .home
     var activeKind: ListingKind = .rentals
@@ -199,6 +407,14 @@ final class HomeSwipeStore {
     var showAddListing = false
     var listingDraft = ListingDraft()
     var firebaseStatus = "Not configured"
+    var profileName = "Guest"
+    var didCompleteOnboarding = false
+    var onboardingStep = 0
+    var onboardingRole: OnboardingRole?
+    var signUpMethod = "Email"
+    var tenantOnboarding = TenantOnboardingInput()
+    var listerOnboarding = ListerOnboardingInput()
+    var verificationState: VerificationState = .notVerified
     var selectedListing: Listing?
     var savedListingIDs: Set<String> = ["1", "4"]
     var activeConversationID = "moyo-properties"
@@ -299,37 +515,24 @@ final class HomeSwipeStore {
         Conversation(id: "prime-estates", person: "Prime Estates", role: "Agent", listingTitle: "Family home with pool", time: "Mon", messages: ["We can share the title deed docs after registration."])
     ]
 
-    var applications: [RentalApplication] = [
-        RentalApplication(id: "application-1", listingID: "1", property: "Sunny 2 bed apartment", landlord: "Moyo Properties", status: "Viewing booked", submitted: "May 3, 2026", nextStep: "Attend viewing and confirm proof of income."),
-        RentalApplication(id: "application-2", listingID: "2", property: "Modern garden cottage", landlord: "Tari Homes", status: "Docs requested", submitted: "May 1, 2026", nextStep: "Upload ID, employment letter, and latest payslip."),
-        RentalApplication(id: "application-3", listingID: "4", property: "Townhouse near schools", landlord: "Kudu Realty", status: "Submitted", submitted: "April 28, 2026", nextStep: "Waiting for landlord response.")
-    ]
+    var applications: [RentalApplication] = []
 
-    var leases: [LeaseDraft] = [
-        LeaseDraft(
-            id: "lease-1",
-            property: "Modern garden cottage, Avondale",
-            landlord: "Tari Homes",
-            tenant: "Rudo M.",
-            rent: "$520",
-            deposit: "$520",
-            startDate: "2026-05-15",
-            endDate: "2027-05-14",
-            utilities: "Prepaid electricity. Water included.",
-            petPolicy: "No pets without written consent.",
-            parking: "Open parking for one vehicle.",
-            status: "Sent for signing",
-            landlordSigned: true,
-            tenantSigned: false
-        )
-    ]
+    var leases: [LeaseDraft] = []
+    var leaseDraft = LeaseDraftInput()
 
-    var documents: [VerificationDocument] = [
-        VerificationDocument(id: "national-id", title: "Government ID and selfie match", status: "Verified", standard: "Name, ID number, expiry, face match, and tamper check.", risk: "Low"),
-        VerificationDocument(id: "proof-income", title: "Proof of income", status: "Needs update", standard: "Latest 3 payslips or employer-confirmed income.", risk: "High"),
-        VerificationDocument(id: "bank-statements", title: "6 months bank statements", status: "Missing", standard: "Salary deposits, cashflow, undisclosed debt, and affordability.", risk: "High"),
-        VerificationDocument(id: "employment-letter", title: "Employment confirmation", status: "Ready for review", standard: "Employer, role, tenure, contract type, and contact validation.", risk: "Medium")
-    ]
+    var documents: [VerificationDocument] = requiredVerificationDocuments(for: .tenant, listerType: "")
+
+    init() {
+        didCompleteOnboarding = UserDefaults.standard.bool(forKey: onboardingCompleteKey)
+        if let roleValue = UserDefaults.standard.string(forKey: onboardingRoleKey) {
+            onboardingRole = OnboardingRole(rawValue: roleValue)
+        }
+        if let statusValue = UserDefaults.standard.string(forKey: verificationStateKey),
+           let savedStatus = VerificationState(rawValue: statusValue) {
+            verificationState = savedStatus
+        }
+        configureVerificationDocuments()
+    }
 
     var activeHomeFilterCount: Int {
         [
@@ -374,6 +577,57 @@ final class HomeSwipeStore {
         listings.filter { savedListingIDs.contains($0.id) }
     }
 
+    var verificationBadgeName: String {
+        verificationState == .verified ? "\(profileName) ✓" : profileName
+    }
+
+    var verificationRoleLabel: String {
+        if onboardingRole == .lister {
+            return listerOnboarding.listerType.isEmpty ? "Lister" : listerOnboarding.listerType
+        }
+
+        return "Tenant"
+    }
+
+    var uploadedDocumentCount: Int {
+        documents.filter { $0.status == "Verified" }.count
+    }
+
+    var hasUploadedAllRequiredDocuments: Bool {
+        !documents.isEmpty && uploadedDocumentCount == documents.count
+    }
+
+    var affordabilityProfileContext: AffordabilityProfileContext {
+        let location: String
+        if onboardingRole == .lister {
+            location = listerOnboarding.primaryLocation.isEmpty ? "Not set" : listerOnboarding.primaryLocation
+        } else {
+            location = tenantOnboarding.city.isEmpty ? "Not set" : tenantOnboarding.city
+        }
+
+        let income = estimatedMonthlyIncomeFromBudget(tenantOnboarding.budget)
+        return AffordabilityProfileContext(
+            monthlyIncome: income,
+            monthlyIncomeLabel: income > 0 ? "$\(Int(income)) per month" : "Not on profile",
+            verificationStatus: verificationState.rawValue,
+            currentLocation: location,
+            userType: onboardingRole?.profileLabel ?? "Tenant"
+        )
+    }
+
+    var isTenantOnboardingComplete: Bool {
+        !tenantOnboarding.city.isEmpty
+            && !tenantOnboarding.budget.isEmpty
+            && !tenantOnboarding.propertyTypes.isEmpty
+            && !tenantOnboarding.employmentStatus.isEmpty
+    }
+
+    var isListerOnboardingComplete: Bool {
+        !listerOnboarding.listerType.isEmpty
+            && !listerOnboarding.primaryLocation.isEmpty
+            && !listerOnboarding.propertyCount.isEmpty
+    }
+
     var activeConversation: Conversation? {
         conversations.first(where: { $0.id == activeConversationID }) ?? conversations.first
     }
@@ -408,9 +662,9 @@ final class HomeSwipeStore {
             }
 
             if let userData = remoteState.userData {
-                applications = userData.applications
+                applications = userData.applications.filter { !Self.demoApplicationIDs.contains($0.id) }
                 conversations = userData.conversations
-                leases = userData.leases
+                leases = userData.leases.filter { !Self.demoLeaseIDs.contains($0.id) }
                 savedListingIDs = Set(userData.savedListingIDs)
                 savedSearches = userData.savedSearches
             } else {
@@ -444,7 +698,7 @@ final class HomeSwipeStore {
             location: listingDraft.location.isEmpty ? location : listingDraft.location,
             price: listingDraft.price.isEmpty ? "Price on request" : "$\(listingDraft.price)",
             meta: listingDraft.spaceType.isEmpty ? "Details available on request" : listingDraft.spaceType,
-            host: "HomeSwipe User",
+            host: profileName,
             imageURL: listings.first?.imageURL ?? "",
             tag: "New",
             description: "Recently added from the SwiftUI listing form.",
@@ -459,6 +713,43 @@ final class HomeSwipeStore {
         syncListing(listing)
     }
 
+    func createLease() {
+        let property = leaseDraft.property.trimmingCharacters(in: .whitespacesAndNewlines)
+        let landlord = leaseDraft.landlord.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tenant = leaseDraft.tenant.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rent = leaseDraft.rent.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !property.isEmpty, !landlord.isEmpty, !tenant.isEmpty, !rent.isEmpty else {
+            return
+        }
+
+        let lease = LeaseDraft(
+            id: UUID().uuidString,
+            property: property,
+            landlord: landlord,
+            tenant: tenant,
+            rent: rent,
+            deposit: leaseDraft.deposit.isEmpty ? "No deposit recorded" : leaseDraft.deposit,
+            startDate: leaseDraft.startDate.isEmpty ? "Start date to be confirmed" : leaseDraft.startDate,
+            endDate: leaseDraft.endDate.isEmpty ? "End date to be confirmed" : leaseDraft.endDate,
+            utilities: leaseDraft.utilities.isEmpty ? "Utilities to be agreed in writing." : leaseDraft.utilities,
+            petPolicy: leaseDraft.petPolicy.isEmpty ? "Pet policy to be agreed in writing." : leaseDraft.petPolicy,
+            parking: leaseDraft.parking.isEmpty ? "Parking to be agreed in writing." : leaseDraft.parking,
+            status: "Draft",
+            landlordSigned: false,
+            tenantSigned: false
+        )
+
+        leases.insert(lease, at: 0)
+        leaseDraft = LeaseDraftInput()
+        syncUserData()
+    }
+
+    func deleteLease(_ lease: LeaseDraft) {
+        leases.removeAll { $0.id == lease.id }
+        syncUserData()
+    }
+
     func sendReply() {
         let trimmed = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = conversations.firstIndex(where: { $0.id == activeConversationID }) else {
@@ -470,31 +761,92 @@ final class HomeSwipeStore {
         syncUserData()
     }
 
-    func markDocumentReady(_ document: VerificationDocument) {
+    func markDocumentReady(_ document: VerificationDocument, fileName: String = "Uploaded document") {
         guard let index = documents.firstIndex(of: document) else { return }
-        documents[index].status = "Ready for review"
+        documents[index].status = "Verified"
+        documents[index].fileName = fileName
+        verificationState = documents.allSatisfy { $0.status == "Verified" } ? .verified : .pendingReview
+        persistOnboardingState()
+        syncUserData()
+    }
+
+    func skipOnboardingVerification() {
+        configureVerificationDocuments()
+        verificationState = .notVerified
+        persistOnboardingState()
+        advanceOnboarding()
+    }
+
+    func advanceOnboarding() {
+        if onboardingStep == 0 {
+            configureVerificationDocuments()
+            onboardingStep = 1
+            return
+        }
+
+        onboardingStep += 1
+        if onboardingStep == 3 {
+            configureVerificationDocuments()
+        }
+        if onboardingStep > 4 {
+            finishOnboarding()
+        }
+    }
+
+    func finishOnboarding() {
+        didCompleteOnboarding = true
+        onboardingStep = 0
+
+        if onboardingRole == .tenant {
+            activeTab = .home
+            activeKind = .rentals
+            searchText = tenantOnboarding.city
+            filters.amenity = tenantOnboarding.amenities.first ?? ""
+        } else {
+            activeTab = .profile
+        }
+
+        persistOnboardingState()
+        syncUserData()
+    }
+
+    func openVerificationCenter() {
+        activeProfileView = .documents
+        activeTab = .profile
+    }
+
+    func configureVerificationDocuments() {
+        documents = requiredVerificationDocuments(for: onboardingRole, listerType: listerOnboarding.listerType)
+    }
+
+    private func persistOnboardingState() {
+        UserDefaults.standard.set(didCompleteOnboarding, forKey: onboardingCompleteKey)
+        if let onboardingRole {
+            UserDefaults.standard.set(onboardingRole.rawValue, forKey: onboardingRoleKey)
+        }
+        UserDefaults.standard.set(verificationState.rawValue, forKey: verificationStateKey)
     }
 
     func runVerification() {
-        let missingHighRisk = documents.filter { $0.risk == "High" && $0.status == "Missing" }.count
+        let missingDocuments = documents.filter { $0.status == "Missing" }.count
 
         verificationSignals = [
             VerificationSignal(
-                source: "OpenAI",
-                label: missingHighRisk > 0 ? "Document reasoning needs review" : "Document reasoning looks consistent",
-                status: missingHighRisk > 0 ? "Review" : "Pass",
-                detail: missingHighRisk > 0 ? "High-risk evidence is missing, so affordability and ownership claims need manual review." : "Extracted names, dates, and property references are consistent enough for underwriter review."
+                source: "HomeSwipe",
+                label: missingDocuments > 0 ? "Required uploads incomplete" : "Required uploads complete",
+                status: missingDocuments > 0 ? "Review" : "Pass",
+                detail: missingDocuments > 0 ? "Upload every required document for \(verificationRoleLabel) to become verified." : "\(verificationRoleLabel) verification is complete."
             ),
             VerificationSignal(
-                source: "Truth AI",
-                label: missingHighRisk > 0 ? "Fraud and identity screen pending" : "Fraud and identity screen clear",
-                status: missingHighRisk > 0 ? "Review" : "Pass",
-                detail: missingHighRisk > 0 ? "Truth AI checks should run after every high-risk document is uploaded." : "No duplicate identity, tamper, or title authority flags are visible in the current packet."
+                source: "Profile",
+                label: verificationState.rawValue,
+                status: verificationState == .verified ? "Pass" : "Review",
+                detail: verificationState == .verified ? "Your profile badge is active." : "Your profile badge activates automatically after all required uploads are complete."
             )
         ]
     }
 
-    private func syncUserData() {
+    func syncUserData() {
         guard firebaseStatus != "Not configured" else { return }
         let payload = currentUserData
         firebaseStatus = "Saving"
@@ -538,10 +890,410 @@ final class HomeSwipeStore {
         return Array(merged.values)
     }
 
+    private static let demoApplicationIDs: Set<String> = ["application-1", "application-2", "application-3"]
+    private static let demoLeaseIDs: Set<String> = ["lease-1"]
+
     private func numberValue(in text: String) -> Double {
         let cleaned = text.replacingOccurrences(of: ",", with: "")
         let number = cleaned.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted).joined()
         return Double(number) ?? 0
+    }
+
+    private func estimatedMonthlyIncomeFromBudget(_ budget: String) -> Double {
+        switch budget {
+        case "Under $200":
+            return 600
+        case "$200-$500":
+            return 1150
+        case "$500-$1000":
+            return 2500
+        case "$1000+":
+            return 4000
+        default:
+            return 0
+        }
+    }
+}
+
+struct OnboardingScreen: View {
+    @Binding var store: HomeSwipeStore
+    @State private var documentPendingUpload: VerificationDocument?
+    @State private var isDocumentImporterPresented = false
+
+    private let cities = ["Harare", "Bulawayo", "Mutare", "Gweru", "Other"]
+    private let budgets = ["Under $200", "$200-$500", "$500-$1000", "$1000+"]
+    private let propertyTypes = ["Apartment", "House", "Cottage", "Room", "Townhouse"]
+    private let amenities = ["Wi-Fi", "Parking", "Borehole", "Solar", "Security", "Furnished"]
+    private let employmentStatuses = ["Employed", "Self-Employed", "Student", "Other"]
+    private let householdTypes = ["Living Alone", "Couple", "Family", "Shared Accommodation", "Student Housing"]
+    private let leasePreferences = ["Month-to-Month", "6 Months", "12 Months", "Long-Term"]
+    private let listerTypes = verificationRoleOptions
+    private let propertyCounts = ["1-5", "6-20", "20+"]
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                onboardingProgress
+
+                if store.onboardingStep == 0 {
+                    signUpStep
+                } else if store.onboardingRole == .tenant {
+                    tenantStep
+                } else {
+                    listerStep
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 24)
+            .padding(.bottom, 40)
+        }
+        .fileImporter(
+            isPresented: $isDocumentImporterPresented,
+            allowedContentTypes: [.pdf, .image],
+            allowsMultipleSelection: false
+        ) { result in
+            guard let document = documentPendingUpload else { return }
+            if case .success(let urls) = result, let url = urls.first {
+                store.markDocumentReady(document, fileName: url.lastPathComponent)
+            }
+            documentPendingUpload = nil
+        }
+    }
+
+    private var onboardingProgress: some View {
+        HStack(spacing: 8) {
+            ForEach(0..<5, id: \.self) { step in
+                Capsule()
+                    .fill(step <= store.onboardingStep ? Color.hex("#0f766e") : Color.hex("#dbeafe"))
+                    .frame(height: 5)
+            }
+        }
+    }
+
+    private var signUpStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            PageTitle(title: "Welcome to HomeSwipe", subtitle: "Find homes or list properties with confidence.")
+
+            VStack(spacing: 10) {
+                OnboardingActionButton(title: "Continue with Google", icon: "g.circle") {
+                    store.signUpMethod = "Google"
+                }
+                OnboardingActionButton(title: "Continue with Apple", icon: "apple.logo") {
+                    store.signUpMethod = "Apple"
+                }
+                OnboardingActionButton(title: "Continue with Email", icon: "envelope") {
+                    store.signUpMethod = "Email"
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("How will you use HomeSwipe?")
+                    .font(.system(size: 20, weight: .heavy))
+                ForEach(OnboardingRole.allCases) { role in
+                    ChoiceButton(title: role.rawValue, isSelected: store.onboardingRole == role) {
+                        store.onboardingRole = role
+                    }
+                }
+            }
+            .cardStyle()
+
+            PrimaryOnboardingButton(title: "Continue", isEnabled: store.onboardingRole != nil) {
+                store.advanceOnboarding()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tenantStep: some View {
+        switch store.onboardingStep {
+        case 1:
+            VStack(alignment: .leading, spacing: 18) {
+                PageTitle(title: "What are you looking for?", subtitle: "Set your search basics so HomeSwipe can prioritize better matches.")
+                SingleChoiceSection(title: "Which city are you searching in?", options: cities, selection: $store.tenantOnboarding.city)
+                SingleChoiceSection(title: "Monthly Budget", options: budgets, selection: $store.tenantOnboarding.budget)
+                MultiChoiceSection(title: "Property Types", options: propertyTypes, selections: $store.tenantOnboarding.propertyTypes)
+                MultiChoiceSection(title: "Amenities", options: amenities, selections: $store.tenantOnboarding.amenities)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: store.isTenantOnboardingComplete) {
+                    store.advanceOnboarding()
+                }
+            }
+        case 2:
+            VStack(alignment: .leading, spacing: 18) {
+                PageTitle(title: "Tell Landlords More About You", subtitle: "A stronger profile helps landlords understand fit before they reply.")
+                SingleChoiceSection(title: "Employment Status", options: employmentStatuses, selection: $store.tenantOnboarding.employmentStatus)
+                MultiChoiceSection(title: "Household Type", options: householdTypes, selections: $store.tenantOnboarding.householdTypes)
+                MultiChoiceSection(title: "Lease Preference", options: leasePreferences, selections: $store.tenantOnboarding.leasePreferences)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.employmentStatus.isEmpty) {
+                    store.advanceOnboarding()
+                }
+            }
+        case 3:
+            verificationStep(title: "Get Verified", message: "Upload the required tenant documents to unlock your verified profile badge.")
+        default:
+            readyStep(title: "You're All Set", message: "Start discovering homes that match your preferences.", buttonTitle: "Start Browsing")
+        }
+    }
+
+    @ViewBuilder
+    private var listerStep: some View {
+        switch store.onboardingStep {
+        case 1:
+            VStack(alignment: .leading, spacing: 18) {
+                PageTitle(title: "Tell Us About Your Properties", subtitle: "Set up your lister profile before publishing your first home.")
+                SingleChoiceSection(title: "I am a:", options: listerTypes, selection: $store.listerOnboarding.listerType)
+                SingleChoiceSection(title: "Primary Location", options: cities, selection: $store.listerOnboarding.primaryLocation)
+                SingleChoiceSection(title: "Number of Properties", options: propertyCounts, selection: $store.listerOnboarding.propertyCount)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: store.isListerOnboardingComplete) {
+                    store.advanceOnboarding()
+                }
+            }
+        case 2:
+            VStack(alignment: .leading, spacing: 18) {
+                PageTitle(title: "Create Your First Listing", subtitle: "Use the same property system that powers the HomeSwipe dashboard.")
+                AddListingPanel(store: $store)
+                Text("You can skip this step and add properties later from your dashboard.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.hex("#64748b"))
+                PrimaryOnboardingButton(title: "Continue", isEnabled: true) {
+                    store.advanceOnboarding()
+                }
+            }
+        case 3:
+            verificationStep(title: "Become a Verified \(store.verificationRoleLabel)", message: "Upload only the documents required for \(store.verificationRoleLabel).")
+        default:
+            readyStep(title: "You're All Set", message: "Start managing listings, messages, and verification from your dashboard.", buttonTitle: "Go to Dashboard")
+        }
+    }
+
+    private func verificationStep(title: String, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            PageTitle(title: title, subtitle: message)
+
+            VStack(alignment: .leading, spacing: 10) {
+                BenefitRow(text: "Only required documents for \(store.verificationRoleLabel)")
+                BenefitRow(text: "Profile becomes verified after all uploads")
+                BenefitRow(text: "You can finish or update uploads from Profile")
+            }
+            .cardStyle()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Required uploads")
+                    .font(.system(size: 18, weight: .heavy))
+                ForEach(store.documents) { document in
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: document.status == "Verified" ? "checkmark.seal.fill" : "doc.badge.plus")
+                            .foregroundStyle(Color.hex("#0f766e"))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(document.title)
+                                .font(.system(size: 15, weight: .bold))
+                            Text(document.standard)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.hex("#64748b"))
+                            if !document.fileName.isEmpty {
+                                Text("Uploaded: \(document.fileName)")
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .foregroundStyle(Color.hex("#2563eb"))
+                            }
+                        }
+                        Spacer()
+                        if document.status == "Verified" {
+                            Text("Uploaded")
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundStyle(Color.hex("#2563eb"))
+                        } else {
+                            Button {
+                                documentPendingUpload = document
+                                isDocumentImporterPresented = true
+                            } label: {
+                                Text("Upload")
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .foregroundStyle(Color.hex("#0f766e"))
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 32)
+                                    .background(Color.hex("#f0fdfa"))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.hex("#f8fafc"))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .cardStyle()
+
+            PrimaryOnboardingButton(title: "Continue Verified", isEnabled: store.hasUploadedAllRequiredDocuments) {
+                store.advanceOnboarding()
+            }
+            SecondaryOnboardingButton(title: "Skip For Now") {
+                store.skipOnboardingVerification()
+            }
+        }
+    }
+
+    private func readyStep(title: String, message: String, buttonTitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Spacer(minLength: 80)
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 58, weight: .bold))
+                .foregroundStyle(Color.hex("#0f766e"))
+            PageTitle(title: title, subtitle: message)
+            PrimaryOnboardingButton(title: buttonTitle, isEnabled: true) {
+                store.finishOnboarding()
+            }
+        }
+    }
+}
+
+struct SingleChoiceSection: View {
+    let title: String
+    let options: [String]
+    @Binding var selection: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(size: 18, weight: .heavy))
+            ForEach(options, id: \.self) { option in
+                ChoiceButton(title: option, isSelected: selection == option) {
+                    selection = option
+                }
+            }
+        }
+        .cardStyle()
+    }
+}
+
+struct MultiChoiceSection: View {
+    let title: String
+    let options: [String]
+    @Binding var selections: Set<String>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(size: 18, weight: .heavy))
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                ForEach(options, id: \.self) { option in
+                    ChoiceButton(title: option, isSelected: selections.contains(option)) {
+                        if selections.contains(option) {
+                            selections.remove(option)
+                        } else {
+                            selections.insert(option)
+                        }
+                    }
+                }
+            }
+        }
+        .cardStyle()
+    }
+}
+
+struct ChoiceButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.hex("#0f766e") : Color.hex("#94a3b8"))
+                Text(title)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.hex("#0f172a"))
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .background(isSelected ? Color.hex("#ecfeff") : Color.hex("#f8fafc"))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.hex("#0f766e") : Color.hex("#e2e8f0"), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct OnboardingActionButton: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f172a"))
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .background(.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#e2e8f0"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct PrimaryOnboardingButton: View {
+    let title: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(isEnabled ? Color.hex("#0f766e") : Color.hex("#94a3b8"))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+}
+
+struct SecondaryOnboardingButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f766e"))
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .background(.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct BenefitRow: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Color.hex("#0f766e"))
+            Text(text)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.hex("#334155"))
+        }
     }
 }
 
@@ -594,150 +1346,800 @@ struct HomeScreen: View {
 
 struct ToolsScreen: View {
     @Binding var store: HomeSwipeStore
+    @State private var activeTool: ToolKind?
+    @State private var toolStep = 0
+    @State private var toolInputs = ToolInputs()
 
     var body: some View {
+        Group {
+            if let activeTool {
+                activeToolFlow(activeTool)
+            } else {
+                toolHome
+            }
+        }
+    }
+
+    private var toolHome: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                PageTitle(title: "Tools", subtitle: "Lease drafting, document verification, and signing workflows.")
+                PageTitle(title: "Tools", subtitle: "Run financing, insurance, project, and lease calculators inside HomeSwipe.")
 
-                VStack(spacing: 12) {
-                    ToolCard(
-                        title: "Lease workspace",
-                        description: "Draft lease terms, track signatures, and manage status changes.",
-                        isActive: true,
-                        icon: "doc.text"
-                    )
-                    ToolCard(
-                        title: "Mortgage verification",
-                        description: "Review income, identity, and ownership evidence before underwriting.",
-                        isActive: false,
-                        icon: "checkmark.shield"
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Lease workspace")
-                                .font(.system(size: 22, weight: .heavy))
-                            Text("Direct communication between landlord and tenant with signing status.")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.hex("#64748b"))
-                        }
-                        Spacer()
-                        Image(systemName: "doc.text")
-                            .font(.title2)
-                            .foregroundStyle(Color.hex("#0f766e"))
-                    }
-
-                    ForEach($store.leases) { $lease in
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text(lease.property)
-                                .font(.system(size: 19, weight: .heavy))
-                            Text("\(lease.landlord) · \(lease.tenant)")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.hex("#475569"))
-                            Text("Rent \(lease.rent) · Deposit \(lease.deposit)")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.hex("#475569"))
-
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 152), spacing: 10)], spacing: 10) {
+                    ForEach(ToolKind.allCases) { tool in
+                        Button {
+                            openTool(tool)
+                        } label: {
                             HStack(spacing: 10) {
-                                SignatureButton(title: "Landlord sign", isDone: $lease.landlordSigned)
-                                SignatureButton(title: "Tenant sign", isDone: $lease.tenantSigned)
-                            }
-
-                            Button {
-                                lease.status = "Sent for signing"
-                            } label: {
-                                Label("Send for online signing", systemImage: "paperplane")
-                                    .font(.system(size: 14, weight: .heavy))
+                                Image(systemName: tool.icon)
+                                    .font(.system(size: 20, weight: .heavy))
                                     .foregroundStyle(Color.hex("#0f766e"))
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 42)
-                                    .background(Color.hex("#f0fdfa"))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 8)
-                                            .stroke(Color.hex("#99f6e4"), lineWidth: 1)
-                                    )
+                                    .frame(width: 38, height: 38)
+                                    .background(Color.hex("#ccfbf1"))
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .cardStyle()
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Verification documents")
-                            .font(.system(size: 22, weight: .heavy))
-                        Spacer()
-                        Button("Run check") {
-                            store.runVerification()
-                        }
-                        .font(.system(size: 14, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .frame(height: 42)
-                        .background(Color.hex("#0f766e"))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .buttonStyle(.plain)
-                    }
-
-                    ForEach(store.documents) { document in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(document.title)
-                                        .font(.system(size: 16, weight: .heavy))
-                                    Text(document.status)
-                                        .font(.system(size: 13, weight: .heavy))
-                                        .foregroundStyle(Color.hex("#0f766e"))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(tool.rawValue)
+                                        .font(.system(size: 14, weight: .heavy))
+                                        .foregroundStyle(Color.hex("#0f172a"))
+                                        .lineLimit(2)
+                                    Text(tool.subtitle)
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(Color.hex("#64748b"))
+                                        .lineLimit(1)
                                 }
-                                Spacer()
-                                Text(document.risk.uppercased())
-                                    .font(.system(size: 11, weight: .heavy))
-                                    .foregroundStyle(document.risk == "High" ? Color.hex("#b91c1c") : Color.hex("#475569"))
+                                Spacer(minLength: 0)
                             }
-
-                            Text(document.standard)
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.hex("#475569"))
-
-                            Button("Mark ready") {
-                                store.markDocumentReady(document)
-                            }
-                            .font(.system(size: 14, weight: .heavy))
-                            .foregroundStyle(Color.hex("#0f766e"))
-                            .buttonStyle(.plain)
+                            .padding(12)
+                            .frame(minHeight: 76)
+                            .background(.white)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.hex("#ccfbf1"), lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
-                        .cardStyle()
-                    }
-
-                    ForEach(store.verificationSignals) { signal in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(signal.source)
-                                    .font(.system(size: 12, weight: .heavy))
-                                    .foregroundStyle(Color.hex("#0f766e"))
-                                Spacer()
-                                Text(signal.status.uppercased())
-                                    .font(.system(size: 12, weight: .heavy))
-                                    .foregroundStyle(signal.status == "Pass" ? Color.hex("#047857") : Color.hex("#92400e"))
-                            }
-                            Text(signal.label)
-                                .font(.system(size: 18, weight: .heavy))
-                            Text(signal.detail)
-                                .font(.system(size: 14))
-                                .foregroundStyle(Color.hex("#64748b"))
-                        }
-                        .cardStyle()
+                        .buttonStyle(.plain)
                     }
                 }
             }
             .padding(.horizontal, 16)
             .padding(.top, 20)
             .padding(.bottom, 120)
+        }
+    }
+
+    private func activeToolFlow(_ tool: ToolKind) -> some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(tool.rawValue)
+                            .font(.system(size: 28, weight: .heavy))
+                            .foregroundStyle(Color.hex("#0f172a"))
+                        Text(tool.subtitle)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.hex("#64748b"))
+                    }
+                    Spacer()
+                    Image(systemName: tool.icon)
+                        .font(.system(size: 28, weight: .heavy))
+                        .foregroundStyle(Color.hex("#0f766e"))
+                }
+
+                HStack(spacing: 8) {
+                    ToolNavButton(title: "Home", icon: "house", action: closeTool)
+                    ToolNavButton(title: "Back", icon: "chevron.left", action: goBack)
+                    ToolNavButton(title: "Restart", icon: "arrow.clockwise", action: restartTool)
+                    ToolNavButton(title: "Cancel", icon: "xmark", tint: Color.hex("#b91c1c"), action: closeTool)
+                }
+
+                if tool == .leases {
+                    leaseToolFlow
+                } else if let report = report(for: tool), toolStep >= questionCount(for: tool) {
+                    ToolReportView(report: report, shareText: reportShareText(report), primaryActions: primaryActions(for: tool))
+                } else {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Text("Question \(toolStep + 1) of \(questionCount(for: tool))")
+                                .font(.system(size: 13, weight: .heavy))
+                                .foregroundStyle(Color.hex("#0f766e"))
+                            Spacer()
+                        }
+
+                        toolQuestion(for: tool, step: toolStep)
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 320)
+
+                        HStack(spacing: 10) {
+                            ToolSecondaryButton(title: "Back", icon: "chevron.left", action: goBack)
+                            ToolPrimaryButton(title: toolStep == questionCount(for: tool) - 1 ? "Calculate Estimate" : "Next", icon: toolStep == questionCount(for: tool) - 1 ? "function" : "chevron.right") {
+                                toolStep += 1
+                            }
+                        }
+                    }
+                    .cardStyle()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 20)
+            .padding(.bottom, 120)
+        }
+    }
+
+    private var leaseToolFlow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            let fields = leaseFields
+            if toolStep < fields.count {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Question \(toolStep + 1) of \(fields.count)")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(Color.hex("#0f766e"))
+                    fields[toolStep]
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: 320)
+                    HStack(spacing: 10) {
+                        ToolSecondaryButton(title: "Back", icon: "chevron.left", action: goBack)
+                        ToolPrimaryButton(title: "Next", icon: "chevron.right") { toolStep += 1 }
+                    }
+                }
+                .cardStyle()
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Review lease details")
+                        .font(.system(size: 22, weight: .heavy))
+                    Text("Create the draft, then share it with the other user for review or signing.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.hex("#64748b"))
+                    LeaseReviewBox(leaseDraft: store.leaseDraft)
+                    HStack(spacing: 10) {
+                        ToolSecondaryButton(title: "Back", icon: "chevron.left", action: goBack)
+                        ToolPrimaryButton(title: "Create lease draft", icon: "plus.circle") {
+                            store.createLease()
+                        }
+                    }
+                }
+                .cardStyle()
+
+                leaseDraftsList
+            }
+        }
+    }
+
+    private var leaseDraftsList: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Lease drafts")
+                    .font(.system(size: 22, weight: .heavy))
+                Spacer()
+                Text("\(store.leases.count)")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.hex("#64748b"))
+            }
+
+            if store.leases.isEmpty {
+                EmptyProfilePanel(icon: "doc.text", title: "No leases yet", message: "Create a lease draft above, then share it with the other user for review or signing.")
+            }
+
+            ForEach($store.leases) { $lease in
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(lease.property)
+                        .font(.system(size: 19, weight: .heavy))
+                    Text("\(lease.landlord) · \(lease.tenant)")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.hex("#475569"))
+                    Text("Rent \(lease.rent) · Deposit \(lease.deposit)")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.hex("#475569"))
+
+                    HStack(spacing: 10) {
+                        SignatureButton(title: "Landlord sign", isDone: $lease.landlordSigned)
+                        SignatureButton(title: "Tenant sign", isDone: $lease.tenantSigned)
+                    }
+
+                    HStack(spacing: 10) {
+                        ShareLink(item: leaseShareText(lease)) {
+                            Label("Share lease", systemImage: "square.and.arrow.up")
+                                .font(.system(size: 14, weight: .heavy))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 42)
+                                .background(Color.hex("#0f766e"))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .simultaneousGesture(TapGesture().onEnded {
+                            if lease.status == "Draft" {
+                                lease.status = "Sent for signing"
+                                store.syncUserData()
+                            }
+                        })
+
+                        Button {
+                            store.deleteLease(lease)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                                .font(.system(size: 14, weight: .heavy))
+                                .foregroundStyle(Color.hex("#b91c1c"))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 42)
+                                .background(Color.hex("#fef2f2"))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.hex("#fecaca"), lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .cardStyle()
+            }
+        }
+    }
+
+    private var leaseFields: [AnyView] {
+        [
+            AnyView(ToolValueInput(title: "Property", text: $store.leaseDraft.property)),
+            AnyView(ToolValueInput(title: "Landlord", text: $store.leaseDraft.landlord)),
+            AnyView(ToolValueInput(title: "Tenant", text: $store.leaseDraft.tenant)),
+            AnyView(ToolValueInput(title: "Monthly rent", text: $store.leaseDraft.rent, prefix: "$", keyboard: .decimalPad)),
+            AnyView(ToolValueInput(title: "Deposit", text: $store.leaseDraft.deposit, prefix: "$", keyboard: .decimalPad)),
+            AnyView(ToolValueInput(title: "Start date", text: $store.leaseDraft.startDate, placeholder: "YYYY-MM-DD")),
+            AnyView(ToolValueInput(title: "End date", text: $store.leaseDraft.endDate, placeholder: "YYYY-MM-DD")),
+            AnyView(ToolValueInput(title: "Utilities", text: $store.leaseDraft.utilities)),
+            AnyView(ToolValueInput(title: "Pet policy", text: $store.leaseDraft.petPolicy)),
+            AnyView(ToolValueInput(title: "Parking", text: $store.leaseDraft.parking))
+        ]
+    }
+
+    @ViewBuilder
+    private func toolQuestion(for tool: ToolKind, step: Int) -> some View {
+        switch tool {
+        case .homeLoan:
+            switch step {
+            case 0: currencyPicker
+            case 1: ToolValueInput(title: "Monthly Net Income", text: $toolInputs.income, prefix: toolInputs.currency, keyboard: .decimalPad)
+            case 2: ToolValueInput(title: "Loan Period", text: $toolInputs.loanYears, helper: "1 to 10 years", suffix: "Years", keyboard: .numberPad)
+            default: ToolValueInput(title: "Deposit Available", text: $toolInputs.deposit, prefix: toolInputs.currency, keyboard: .decimalPad)
+            }
+        case .rentLoan:
+            switch step {
+            case 0: currencyPicker
+            case 1: ToolValueInput(title: "Monthly Rent", text: $toolInputs.monthlyRent, prefix: toolInputs.currency, keyboard: .decimalPad)
+            case 2: ToolValueInput(title: "Months Needing Support", text: $toolInputs.supportMonths, suffix: "Months", keyboard: .numberPad)
+            default: ToolValueInput(title: "Repayment Period", text: $toolInputs.repaymentMonths, suffix: "Months", keyboard: .numberPad)
+            }
+        case .householdInsurance:
+            switch step {
+            case 0: currencyPicker
+            case 1: ToolValueInput(title: "Household Contents Value", text: $toolInputs.contentsValue, prefix: toolInputs.currency, keyboard: .decimalPad)
+            default: optionPicker(title: "Cover Type", options: ["Basic", "Standard", "Premium"], selection: $toolInputs.coverType)
+            }
+        case .propertyUpgrades:
+            switch step {
+            case 0: currencyPicker
+            case 1: optionPicker(title: "Upgrade Type", options: ["Solar Installation", "Boreholes", "Kitchens", "Roofing", "Tiling", "Security Systems", "Boundary Walls", "Painting", "Extensions"], selection: $toolInputs.upgradeType)
+            case 2: ToolValueInput(title: "Property Location", text: $toolInputs.propertyLocation)
+            case 3: ToolValueInput(title: "Estimated Budget", text: $toolInputs.upgradeBudget, prefix: toolInputs.currency, keyboard: .decimalPad)
+            default: ToolValueInput(title: "Schedule Site Inspection", text: $toolInputs.siteInspection, placeholder: "Preferred date or time")
+            }
+        case .buildingFinancing:
+            switch step {
+            case 0: currencyPicker
+            case 1: optionPicker(title: "Building Stage", options: ["Foundation", "Walls", "Roofing", "Finishing", "Full Build"], selection: $toolInputs.buildingStage)
+            case 2: ToolValueInput(title: "Stand Location", text: $toolInputs.standLocation)
+            case 3: ToolValueInput(title: "Estimated Build Size", text: $toolInputs.buildSize, suffix: "sqm", keyboard: .decimalPad)
+            case 4: ToolValueInput(title: "Estimated Budget", text: $toolInputs.buildBudget, prefix: toolInputs.currency, keyboard: .decimalPad)
+            default: ToolValueInput(title: "Schedule Site Inspection", text: $toolInputs.siteInspection, placeholder: "Preferred date or time")
+            }
+        case .homeInsurance:
+            switch step {
+            case 0: currencyPicker
+            case 1: ToolValueInput(title: "Property Value", text: $toolInputs.propertyValue, prefix: toolInputs.currency, keyboard: .decimalPad)
+            case 2: optionPicker(title: "Property Type", options: ["House", "Apartment", "Townhouse", "Cottage"], selection: $toolInputs.propertyType)
+            default: ToolValueInput(title: "Property Location", text: $toolInputs.insuranceLocation)
+            }
+        case .leases:
+            EmptyView()
+        }
+    }
+
+    private var currencyPicker: some View {
+        optionPicker(title: "Select Currency", options: ["USD", "ZWG"], selection: $toolInputs.currency)
+    }
+
+    private func optionPicker(title: String, options: [String], selection: Binding<String>) -> some View {
+        VStack(spacing: 14) {
+            Text(title)
+                .font(.system(size: 18, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f172a"))
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 10)], spacing: 10) {
+                ForEach(options, id: \.self) { option in
+                    Button {
+                        selection.wrappedValue = option
+                    } label: {
+                        HStack {
+                            Image(systemName: selection.wrappedValue == option ? "checkmark.circle.fill" : "circle")
+                            Text(option)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.78)
+                        }
+                        .font(.system(size: 14, weight: .heavy))
+                        .foregroundStyle(selection.wrappedValue == option ? .white : Color.hex("#0f766e"))
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: 46)
+                        .padding(.horizontal, 10)
+                        .background(selection.wrappedValue == option ? Color.hex("#0f766e") : .white)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func questionCount(for tool: ToolKind) -> Int {
+        switch tool {
+        case .householdInsurance: return 3
+        case .homeInsurance, .rentLoan, .homeLoan: return 4
+        case .propertyUpgrades: return 5
+        case .buildingFinancing: return 6
+        case .leases: return leaseFields.count
+        }
+    }
+
+    private func openTool(_ tool: ToolKind) {
+        activeTool = tool
+        toolStep = 0
+    }
+
+    private func closeTool() {
+        activeTool = nil
+        toolStep = 0
+    }
+
+    private func restartTool() {
+        toolInputs = ToolInputs()
+        store.leaseDraft = LeaseDraftInput()
+        toolStep = 0
+    }
+
+    private func goBack() {
+        if toolStep > 0 {
+            toolStep -= 1
+        } else {
+            closeTool()
+        }
+    }
+
+    private func leaseShareText(_ lease: LeaseDraft) -> String {
+        [
+            "HomeSwipe lease: \(lease.property)",
+            "Landlord: \(lease.landlord)",
+            "Tenant: \(lease.tenant)",
+            "Rent: \(lease.rent)",
+            "Deposit: \(lease.deposit)",
+            "Term: \(lease.startDate) to \(lease.endDate)",
+            "Status: \(lease.status)"
+        ].joined(separator: "\n")
+    }
+
+    private func primaryActions(for tool: ToolKind) -> [(String, String)] {
+        switch tool {
+        case .homeLoan: return [("Get Pre-Approved", "checkmark.circle"), ("Compare Mortgages", "arrow.left.arrow.right")]
+        case .rentLoan: return [("Apply for Rent Loan", "banknote")]
+        case .householdInsurance: return [("Request Quote", "text.bubble")]
+        case .propertyUpgrades: return [("Request Site Visit", "calendar"), ("Apply For Upgrade Financing", "hammer")]
+        case .buildingFinancing: return [("Request Site Visit", "calendar"), ("Apply For Building Finance", "building.2")]
+        case .homeInsurance: return [("Request Home Insurance Quote", "text.bubble")]
+        case .leases: return []
+        }
+    }
+
+    private func reportShareText(_ report: ToolReport) -> String {
+        var lines = ["HomeSwipe \(report.title)", "", "Inputs"]
+        lines += report.inputs.map { "\($0.0): \($0.1)" }
+        lines += ["", "Results"]
+        lines += report.results.map { "\($0.0): \($0.1)" }
+        if !report.notes.isEmpty {
+            lines += ["", "Notes"]
+            lines += report.notes
+        }
+        lines += ["", "Disclaimer: Estimates are indicative and subject to assessment, verification, valuation, fees and final approval."]
+        return lines.joined(separator: "\n")
+    }
+
+    private func report(for tool: ToolKind) -> ToolReport? {
+        let currency = toolInputs.currency
+        let interestRate = 0.125
+        switch tool {
+        case .homeLoan:
+            let income = amount(toolInputs.income)
+            let years = min(10, max(1, amount(toolInputs.loanYears)))
+            let deposit = amount(toolInputs.deposit)
+            let monthlyRate = interestRate / 12
+            let months = years * 12
+            let monthlyRepayment = income * 0.3
+            let loanAmount = monthlyRate > 0 ? monthlyRepayment * ((1 - pow(1 + monthlyRate, -months)) / monthlyRate) : monthlyRepayment * months
+            let requiredDeposit = max(deposit, loanAmount * 0.1)
+            let purchasePrice = loanAmount + requiredDeposit
+            let transferCosts = purchasePrice * 0.035
+            let registrationCosts = loanAmount * 0.025
+            let valuationFees = max(150, purchasePrice * 0.002)
+            let applicationFees = max(100, loanAmount * 0.0015)
+            return ToolReport(
+                title: tool.rawValue,
+                inputs: [("Currency", currency), ("Monthly Net Income", money(currency, income)), ("Loan Period", "\(Int(years)) years"), ("Deposit Available", money(currency, deposit))],
+                results: [("Estimated Purchase Price", money(currency, purchasePrice)), ("Required Deposit", money(currency, requiredDeposit)), ("Estimated Loan Amount", money(currency, loanAmount)), ("Monthly Repayment", money(currency, monthlyRepayment)), ("Interest Rate", "12.5%"), ("Estimated Upfront Costs", money(currency, transferCosts + registrationCosts + valuationFees + applicationFees)), ("Transfer Costs", money(currency, transferCosts)), ("Registration Costs", money(currency, registrationCosts)), ("Valuation Fees", money(currency, valuationFees)), ("Application Fees", money(currency, applicationFees))]
+            )
+        case .rentLoan:
+            let rent = amount(toolInputs.monthlyRent)
+            let supportMonths = max(1, amount(toolInputs.supportMonths))
+            let repaymentMonths = max(1, amount(toolInputs.repaymentMonths))
+            let principal = rent * supportMonths
+            let serviceFee = principal * 0.03
+            let total = principal + principal * interestRate * (repaymentMonths / 12) + serviceFee
+            return ToolReport(
+                title: tool.rawValue,
+                inputs: [("Currency", currency), ("Monthly Rent", money(currency, rent)), ("Months Needing Support", "\(Int(supportMonths))"), ("Repayment Period", "\(Int(repaymentMonths)) months")],
+                results: [("Total Rent Finance Required", money(currency, principal)), ("Monthly Repayment", money(currency, total / repaymentMonths)), ("Interest Rate", "12.5%"), ("Service Fee", money(currency, serviceFee)), ("Total Repayment", money(currency, total))],
+                notes: ["Rent loan estimates exclude security deposits and are based only on rent financing requirements."]
+            )
+        case .householdInsurance:
+            let value = amount(toolInputs.contentsValue)
+            let rate = ["Basic": 0.008, "Standard": 0.012, "Premium": 0.018][toolInputs.coverType] ?? 0.012
+            let annual = value * rate
+            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Contents Value", money(currency, value)), ("Cover Type", toolInputs.coverType)], results: [("Estimated Monthly Premium", money(currency, annual / 12)), ("Estimated Annual Premium", money(currency, annual)), ("Cover Type", toolInputs.coverType), ("Insured Value", money(currency, value))])
+        case .propertyUpgrades:
+            let budget = amount(toolInputs.upgradeBudget)
+            let total = budget + budget * interestRate * 3
+            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Upgrade Type", toolInputs.upgradeType), ("Property Location", fallback(toolInputs.propertyLocation)), ("Estimated Budget", money(currency, budget)), ("Site Inspection", fallback(toolInputs.siteInspection, "To be scheduled"))], results: [("Estimated Project Cost", money(currency, budget)), ("Estimated Monthly Repayment", money(currency, total / 36)), ("Finance Amount", money(currency, budget)), ("Interest Rate", "12.5%"), ("Project Timeline", budget > 20000 ? "8-16 weeks" : "3-8 weeks")], notes: ["HomeSwipe controls the project, suppliers, contractors, payments, inspections and completion process.", "Funds are paid directly to approved suppliers and contractors, not to the customer."])
+        case .buildingFinancing:
+            let budget = amount(toolInputs.buildBudget)
+            let size = amount(toolInputs.buildSize)
+            let stageMultipliers: [String: Double] = ["Foundation": 0.2, "Walls": 0.35, "Roofing": 0.25, "Finishing": 0.3, "Full Build": 1.0]
+            let multiplier = stageMultipliers[toolInputs.buildingStage] ?? 1.0
+            let estimated = max(budget, size * 450 * multiplier)
+            let total = estimated + estimated * interestRate * 5
+            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Building Stage", toolInputs.buildingStage), ("Stand Location", fallback(toolInputs.standLocation)), ("Estimated Build Size", "\(Int(size)) sqm"), ("Estimated Budget", money(currency, budget)), ("Site Inspection", fallback(toolInputs.siteInspection, "To be scheduled"))], results: [("Estimated Building Cost", money(currency, estimated)), ("Finance Amount", money(currency, estimated)), ("Monthly Repayment", money(currency, total / 60)), ("Interest Rate", "12.5%"), ("Project Timeline", toolInputs.buildingStage == "Full Build" ? "6-12 months" : "6-20 weeks")], notes: ["HomeSwipe oversees construction, suppliers, contractors, quality control, inspections and project completion.", "Payments are made directly to suppliers and contractors in approved project stages."])
+        case .homeInsurance:
+            let value = amount(toolInputs.propertyValue)
+            let annual = value * 0.006
+            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Property Value", money(currency, value)), ("Property Type", toolInputs.propertyType), ("Property Location", fallback(toolInputs.insuranceLocation))], results: [("Estimated Monthly Premium", money(currency, annual / 12)), ("Estimated Annual Premium", money(currency, annual)), ("Property Value", money(currency, value)), ("Property Type", toolInputs.propertyType), ("Property Location", fallback(toolInputs.insuranceLocation))])
+        case .leases:
+            return nil
+        }
+    }
+
+    private func amount(_ text: String) -> Double {
+        let cleaned = text.replacingOccurrences(of: ",", with: "")
+        let number = cleaned.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted).joined()
+        return Double(number) ?? 0
+    }
+
+    private func money(_ currency: String, _ value: Double) -> String {
+        "\(currency) \(Int(value.rounded()).formatted())"
+    }
+
+    private func fallback(_ value: String, _ fallback: String = "Not provided") -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : value
+    }
+}
+
+struct ToolValueInput: View {
+    let title: String
+    @Binding var text: String
+    var helper = ""
+    var prefix = ""
+    var suffix = ""
+    var placeholder = ""
+    var keyboard: UIKeyboardType = .default
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 18, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f172a"))
+                .multilineTextAlignment(.center)
+            if !helper.isEmpty {
+                Text(helper)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.hex("#64748b"))
+            }
+            HStack(spacing: 8) {
+                if !prefix.isEmpty {
+                    Text(prefix)
+                        .font(.system(size: 14, weight: .heavy))
+                        .foregroundStyle(Color.hex("#0f766e"))
+                }
+                TextField(placeholder.isEmpty ? title : placeholder, text: $text)
+                    .keyboardType(keyboard)
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 18, weight: .heavy))
+                if !suffix.isEmpty {
+                    Text(suffix)
+                        .font(.system(size: 14, weight: .heavy))
+                        .foregroundStyle(Color.hex("#0f766e"))
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: 360)
+            .frame(height: 50)
+            .background(.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct ToolReportView: View {
+    let report: ToolReport
+    let shareText: String
+    let primaryActions: [(String, String)]
+
+    private var hero: (String, String) {
+        report.results.first ?? ("Estimated Result", "Ready")
+    }
+
+    private var detailResults: [(String, String)] {
+        Array(report.results.dropFirst())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(report.title) Results")
+                        .font(.system(size: 22, weight: .heavy))
+                    Text("Professional estimate generated today")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.hex("#64748b"))
+                }
+                Spacer()
+                Label("PDF Ready", systemImage: "doc.text")
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(Color.hex("#0f766e"))
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .background(Color.hex("#ecfeff"))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(hero.0.uppercased())
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(Color.hex("#99f6e4"))
+                Text(hero.1)
+                    .font(.system(size: 30, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .minimumScaleFactor(0.75)
+                HStack(spacing: 10) {
+                    ToolMeta(title: "User", value: "Guest")
+                    ToolMeta(title: "Status", value: "Estimate")
+                    ToolMeta(title: "Date", value: Date.now.formatted(date: .numeric, time: .omitted))
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.hex("#0f172a"))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Calculation Inputs")
+                    .font(.system(size: 16, weight: .heavy))
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8)], spacing: 8) {
+                    ForEach(report.inputs, id: \.0) { input in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(input.0.uppercased())
+                                .font(.system(size: 10, weight: .heavy))
+                                .foregroundStyle(Color.hex("#64748b"))
+                            Text(input.1)
+                                .font(.system(size: 14, weight: .heavy))
+                                .foregroundStyle(Color.hex("#0f172a"))
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.78)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 10)
+                        .overlay(alignment: .bottom) {
+                            Rectangle().fill(Color.hex("#e2e8f0")).frame(height: 1)
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Result Breakdown")
+                    .font(.system(size: 16, weight: .heavy))
+                ForEach(detailResults, id: \.0) { result in
+                    HStack(spacing: 12) {
+                        Text(result.0)
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Color.hex("#334155"))
+                        Spacer()
+                        Text(result.1)
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(Color.hex("#0f172a"))
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .padding(.vertical, 10)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(Color.hex("#e2e8f0")).frame(height: 1)
+                    }
+                }
+            }
+
+            ForEach(report.notes, id: \.self) { note in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "info.circle")
+                    Text(note)
+                }
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.hex("#075985"))
+                .padding(12)
+                .background(Color.hex("#eff6ff"))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            VStack(spacing: 10) {
+                ForEach(primaryActions, id: \.0) { action in
+                    ToolPrimaryButton(title: action.0, icon: action.1) {}
+                }
+                ShareLink(item: shareText) {
+                    Label("Share PDF", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 14, weight: .heavy))
+                        .foregroundStyle(Color.hex("#0f766e"))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(.white)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                ToolSecondaryButton(title: "Save Results", icon: "bookmark") {}
+                ToolSecondaryButton(title: "Download PDF", icon: "arrow.down.doc") {}
+                ToolSecondaryButton(title: "Email PDF", icon: "envelope") {}
+            }
+        }
+        .cardStyle()
+    }
+}
+
+struct ToolMeta: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .heavy))
+                .foregroundStyle(Color.hex("#94a3b8"))
+            Text(value)
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct LeaseReviewBox: View {
+    let leaseDraft: LeaseDraftInput
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(leaseDraft.property.isEmpty ? "Property not added" : leaseDraft.property)
+                .font(.system(size: 18, weight: .heavy))
+            Text("Landlord: \(leaseDraft.landlord.isEmpty ? "Not added" : leaseDraft.landlord)")
+            Text("Tenant: \(leaseDraft.tenant.isEmpty ? "Not added" : leaseDraft.tenant)")
+            Text("Rent: \(leaseDraft.rent.isEmpty ? "Not added" : leaseDraft.rent)")
+            Text("Deposit: \(leaseDraft.deposit.isEmpty ? "No deposit recorded" : leaseDraft.deposit)")
+        }
+        .font(.system(size: 14, weight: .bold))
+        .foregroundStyle(Color.hex("#334155"))
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.hex("#f8fafc"))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ToolPrimaryButton: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(Color.hex("#0f766e"))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ToolSecondaryButton: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f766e"))
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ToolNavButton: View {
+    let title: String
+    let icon: String
+    var tint = Color.hex("#0f766e")
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(tint)
+                .frame(maxWidth: .infinity)
+                .frame(height: 38)
+                .background(.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(tint.opacity(0.28), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct LeaseTextField: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(Color.hex("#334155"))
+            TextField(title, text: $text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(Color.hex("#f8fafc"))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#cbd5e1"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 }
@@ -862,6 +2264,8 @@ struct MessagesScreen: View {
 
 struct ProfileScreen: View {
     @Binding var store: HomeSwipeStore
+    @State private var documentPendingUpload: VerificationDocument?
+    @State private var isDocumentImporterPresented = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -878,14 +2282,19 @@ struct ProfileScreen: View {
                 }
 
                 HStack(spacing: 14) {
-                    RemoteAvatarImage(url: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=600&q=80")
+                    InitialAvatar(name: store.profileName)
                         .frame(width: 74, height: 74)
-                        .clipShape(Circle())
 
                     VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(store.profileName)
+                                .font(.system(size: 24, weight: .heavy))
+                            if store.verificationState == .verified {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundStyle(Color.hex("#2563eb"))
+                            }
+                        }
                         Text(store.activeProfileView.title)
-                            .font(.system(size: 24, weight: .heavy))
-                        Text("Tenant · verified profile")
                             .font(.system(size: 15))
                             .foregroundStyle(Color.hex("#64748b"))
                     }
@@ -912,13 +2321,13 @@ struct ProfileScreen: View {
                     HStack(spacing: 10) {
                         StatBlock(value: "\(store.savedListings.count)", label: "Saved")
                         StatBlock(value: "\(store.applications.count)", label: "Applications")
-                        StatBlock(value: "4.8", label: "Rating")
+                        StatBlock(value: "0", label: "Reviews")
                     }
 
                     VStack(spacing: 0) {
                         ProfileMenuRow(title: "Saved homes") { store.activeProfileView = .saved }
                         ProfileMenuRow(title: "Applications") { store.activeProfileView = .applications }
-                        ProfileMenuRow(title: "Verification documents") { store.activeProfileView = .documents }
+                        ProfileMenuRow(title: "Verification Center") { store.activeProfileView = .documents }
                         ProfileMenuRow(title: "Saved searches", hidesDivider: true) { store.activeProfileView = .searches }
                     }
                     .background(.white)
@@ -944,27 +2353,58 @@ struct ProfileScreen: View {
 
                 if store.activeProfileView == .applications {
                     VStack(spacing: 12) {
-                        ForEach(store.applications) { application in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(application.property)
-                                    .font(.system(size: 19, weight: .heavy))
-                                Text(application.landlord)
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Color.hex("#475569"))
-                                Text(application.status)
-                                    .font(.system(size: 14, weight: .heavy))
-                                    .foregroundStyle(Color.hex("#0f766e"))
-                                Text(application.nextStep)
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Color.hex("#64748b"))
+                        if store.applications.isEmpty {
+                            EmptyProfilePanel(
+                                icon: "doc.text",
+                                title: "No applications yet",
+                                message: "When you request a viewing or submit an application, it will appear here."
+                            )
+                        } else {
+                            ForEach(store.applications) { application in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(application.property)
+                                        .font(.system(size: 19, weight: .heavy))
+                                    Text(application.landlord)
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(Color.hex("#475569"))
+                                    Text(application.status)
+                                        .font(.system(size: 14, weight: .heavy))
+                                        .foregroundStyle(Color.hex("#0f766e"))
+                                    Text(application.nextStep)
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(Color.hex("#64748b"))
+                                }
+                                .cardStyle()
                             }
-                            .cardStyle()
                         }
                     }
                 }
 
                 if store.activeProfileView == .documents {
-                    VStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("\(store.verificationRoleLabel) Verification")
+                                    .font(.system(size: 18, weight: .heavy))
+                                Spacer()
+                                Text(store.verificationState.rawValue)
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .foregroundStyle(store.verificationState == .verified ? Color.hex("#2563eb") : Color.hex("#0f766e"))
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 30)
+                                    .background(Color.hex("#ecfeff"))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+
+                            Text("Upload the required documents for your selected role. Your profile changes to Verified after all required uploads are complete.")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Color.hex("#64748b"))
+                            Text("\(store.uploadedDocumentCount) of \(store.documents.count) uploaded")
+                                .font(.system(size: 13, weight: .heavy))
+                                .foregroundStyle(store.hasUploadedAllRequiredDocuments ? Color.hex("#2563eb") : Color.hex("#0f766e"))
+                        }
+                        .cardStyle()
+
                         ForEach(store.documents) { document in
                             HStack(spacing: 12) {
                                 Circle()
@@ -975,16 +2415,39 @@ struct ProfileScreen: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(document.title)
                                         .font(.system(size: 16, weight: .heavy))
+                                    Text(document.standard)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(Color.hex("#64748b"))
+                                    if !document.fileName.isEmpty {
+                                        Text("Uploaded: \(document.fileName)")
+                                            .font(.system(size: 12, weight: .heavy))
+                                            .foregroundStyle(Color.hex("#2563eb"))
+                                    }
                                     Text(document.status)
                                         .font(.system(size: 13, weight: .heavy))
-                                        .foregroundStyle(Color.hex("#0f766e"))
+                                        .foregroundStyle(document.status == "Verified" ? Color.hex("#2563eb") : Color.hex("#0f766e"))
                                 }
 
                                 Spacer()
 
-                                Text(document.risk.uppercased())
-                                    .font(.system(size: 11, weight: .heavy))
-                                    .foregroundStyle(document.risk == "High" ? Color.hex("#b91c1c") : Color.hex("#475569"))
+                                if document.status == "Verified" {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .foregroundStyle(Color.hex("#2563eb"))
+                                } else {
+                                    Button {
+                                        documentPendingUpload = document
+                                        isDocumentImporterPresented = true
+                                    } label: {
+                                        Text("Upload")
+                                            .font(.system(size: 12, weight: .heavy))
+                                            .foregroundStyle(Color.hex("#0f766e"))
+                                            .padding(.horizontal, 10)
+                                            .frame(height: 32)
+                                            .background(Color.hex("#f0fdfa"))
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                             .padding(14)
                             .background(.white)
@@ -1029,6 +2492,17 @@ struct ProfileScreen: View {
             .padding(.top, 20)
             .padding(.bottom, 120)
         }
+        .fileImporter(
+            isPresented: $isDocumentImporterPresented,
+            allowedContentTypes: [.pdf, .image],
+            allowsMultipleSelection: false
+        ) { result in
+            guard let document = documentPendingUpload else { return }
+            if case .success(let urls) = result, let url = urls.first {
+                store.markDocumentReady(document, fileName: url.lastPathComponent)
+            }
+            documentPendingUpload = nil
+        }
     }
 }
 
@@ -1044,22 +2518,6 @@ struct HomeHeader: View {
                 Text("Find rentals, homes, and stands without the runaround.")
                     .font(.system(size: 16))
                     .foregroundStyle(Color.hex("#64748b"))
-
-                HStack(spacing: 6) {
-                    Image(systemName: "icloud")
-                        .font(.system(size: 13, weight: .bold))
-                    Text("Firebase: \(store.firebaseStatus)")
-                        .font(.system(size: 12, weight: .heavy))
-                }
-                .foregroundStyle(Color.hex("#0f766e"))
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(Color.hex("#ecfeff"))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.hex("#99f6e4"), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
             Spacer(minLength: 12)
@@ -1313,8 +2771,10 @@ struct ListingCard: View {
 struct ListingDetailView: View {
     let listing: Listing
     let isSaved: Bool
+    let affordabilityProfile: AffordabilityProfileContext
     let onToggleSaved: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var showsAffordabilityAssistant = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -1359,6 +2819,25 @@ struct ListingDetailView: View {
                         .foregroundStyle(Color.hex("#0f766e"))
                 }
 
+                Button {
+                    withAnimation(.snappy) {
+                        showsAffordabilityAssistant.toggle()
+                    }
+                } label: {
+                    Label("Check Affordability", systemImage: "checkmark.shield")
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(Color.hex("#0f766e"))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+
+                if showsAffordabilityAssistant {
+                    AffordabilityAssistantPanel(listing: listing, profile: affordabilityProfile)
+                }
+
                 FlowRow(items: listing.details)
                 DetailSection(title: "Description", lines: [listing.description])
                 DetailSection(title: "Amenities", lines: listing.amenities)
@@ -1382,6 +2861,385 @@ struct ListingDetailView: View {
             .padding(16)
         }
         .background(Color(hex: "#f8fafc"))
+    }
+}
+
+struct AffordabilityAssistantPanel: View {
+    let listing: Listing
+    let profile: AffordabilityProfileContext
+    @State private var answers = AffordabilityAnswers()
+    @State private var step = 0
+    @State private var didCalculate = false
+
+    private let employmentOptions = ["Full-time Employed", "Part-time Employed", "Self-employed", "Business Owner", "Other"]
+    private let yearsOptions = ["Less than 1 year", "1-3 years", "3-5 years", "More than 5 years"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("HomeSwipe Affordability Assistant")
+                        .font(.system(size: 20, weight: .heavy))
+                    Text("Using profile details already available.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.hex("#64748b"))
+                }
+                Spacer()
+                Image(systemName: "house.lodge")
+                    .font(.title2)
+                    .foregroundStyle(Color.hex("#0f766e"))
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                ProfileFact(title: "Monthly income", value: profile.monthlyIncomeLabel)
+                ProfileFact(title: "Verification", value: profile.verificationStatus)
+                ProfileFact(title: "Location", value: profile.currentLocation)
+                ProfileFact(title: "User type", value: profile.userType)
+            }
+
+            if didCalculate {
+                affordabilityResults
+            } else {
+                activeQuestion
+            }
+        }
+        .cardStyle()
+    }
+
+    @ViewBuilder
+    private var activeQuestion: some View {
+        switch step {
+        case 0:
+            VStack(alignment: .leading, spacing: 12) {
+                assistantQuestion("What is your employment status?")
+                ForEach(employmentOptions, id: \.self) { option in
+                    ChoiceButton(title: option, isSelected: answers.employmentStatus == option) {
+                        answers.employmentStatus = option
+                        step = 1
+                    }
+                }
+            }
+        case 1:
+            VStack(alignment: .leading, spacing: 12) {
+                assistantQuestion("Who do you work for?")
+                TextField("Employer or business name", text: $answers.employer)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 12)
+                    .frame(height: 44)
+                    .background(Color.hex("#f8fafc"))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.hex("#cbd5e1"), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                assistantNextButton(isEnabled: !answers.employer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                    step = 2
+                }
+            }
+        case 2:
+            VStack(alignment: .leading, spacing: 12) {
+                assistantQuestion("How long have you been working there?")
+                ForEach(yearsOptions, id: \.self) { option in
+                    ChoiceButton(title: option, isSelected: answers.yearsEmployed == option) {
+                        answers.yearsEmployed = option
+                        step = 3
+                    }
+                }
+            }
+        case 3:
+            VStack(alignment: .leading, spacing: 12) {
+                assistantQuestion("Do you currently have any loans?")
+                HStack(spacing: 10) {
+                    ChoiceButton(title: "Yes", isSelected: answers.hasLoans == true) {
+                        answers.hasLoans = true
+                        step = 4
+                    }
+                    ChoiceButton(title: "No", isSelected: answers.hasLoans == false) {
+                        answers.hasLoans = false
+                        answers.loanRepayment = ""
+                        step = 5
+                    }
+                }
+            }
+        case 4:
+            VStack(alignment: .leading, spacing: 12) {
+                assistantQuestion("What is your monthly loan repayment amount?")
+                MoneyInput(title: "Monthly loan repayment", text: $answers.loanRepayment)
+                assistantNextButton(isEnabled: amountValue(answers.loanRepayment) >= 0) {
+                    step = 5
+                }
+            }
+        default:
+            VStack(alignment: .leading, spacing: 12) {
+                assistantQuestion("How much do you currently have saved for a deposit?")
+                MoneyInput(title: "Savings / deposit available", text: $answers.deposit)
+                assistantNextButton(isEnabled: !answers.deposit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                    didCalculate = true
+                }
+            }
+        }
+    }
+
+    private var affordabilityResults: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("HomeSwipe Affordability Score")
+                .font(.system(size: 22, weight: .heavy))
+
+            HStack(spacing: 10) {
+                ScoreBadge(title: "Rent Ready", isReady: rentReady)
+                ScoreBadge(title: "Mortgage Ready", isReady: mortgageReady)
+                ScoreBadge(title: "Upgrade Loan Eligible", isReady: upgradeLoanEligible)
+            }
+
+            VStack(spacing: 10) {
+                ResultRow(title: "Estimated Rent Budget", value: "$\(Int(estimatedRentBudget)) per month")
+                ResultRow(title: "Estimated Home Purchase Budget", value: "$\(Int(estimatedHomePurchaseBudget))")
+                ResultRow(title: "Available Deposit", value: "$\(Int(depositAmount))")
+            }
+
+            VStack(spacing: 10) {
+                AssistantActionButton(title: "Get Pre-Approved", icon: "checkmark.seal")
+                AssistantActionButton(title: "Compare Mortgages", icon: "building.columns")
+                AssistantActionButton(title: "Upgrade Loans", icon: "hammer")
+            }
+        }
+    }
+
+    private var monthlyLoanRepayment: Double {
+        answers.hasLoans == true ? amountValue(answers.loanRepayment) : 0
+    }
+
+    private var depositAmount: Double {
+        amountValue(answers.deposit)
+    }
+
+    private var disposableIncome: Double {
+        max(0, profile.monthlyIncome - monthlyLoanRepayment)
+    }
+
+    private var estimatedRentBudget: Double {
+        max(0, disposableIncome * 0.32 * employmentMultiplier * verificationMultiplier)
+    }
+
+    private var estimatedHomePurchaseBudget: Double {
+        max(0, (disposableIncome * 0.28 * 12 * 18 * employmentMultiplier * verificationMultiplier) + depositAmount)
+    }
+
+    private var listingPriceAmount: Double {
+        amountValue(listing.price)
+    }
+
+    private var rentReady: Bool {
+        listing.kind == .rentals ? estimatedRentBudget >= listingPriceAmount : estimatedRentBudget > 0
+    }
+
+    private var mortgageReady: Bool {
+        depositAmount >= max(1000, estimatedHomePurchaseBudget * 0.05) && estimatedHomePurchaseBudget >= listingPriceAmount
+    }
+
+    private var upgradeLoanEligible: Bool {
+        disposableIncome >= 500 && monthlyLoanRepayment <= profile.monthlyIncome * 0.25
+    }
+
+    private var employmentMultiplier: Double {
+        let employmentBoost: Double
+        switch answers.employmentStatus {
+        case "Full-time Employed", "Business Owner":
+            employmentBoost = 1.0
+        case "Part-time Employed", "Self-employed":
+            employmentBoost = 0.92
+        default:
+            employmentBoost = 0.84
+        }
+
+        let yearsBoost: Double
+        switch answers.yearsEmployed {
+        case "More than 5 years":
+            yearsBoost = 1.1
+        case "3-5 years":
+            yearsBoost = 1.04
+        case "1-3 years":
+            yearsBoost = 0.98
+        default:
+            yearsBoost = 0.9
+        }
+
+        return employmentBoost * yearsBoost
+    }
+
+    private var verificationMultiplier: Double {
+        switch profile.verificationStatus {
+        case VerificationState.verified.rawValue:
+            return 1.08
+        case VerificationState.pendingReview.rawValue:
+            return 1.0
+        default:
+            return 0.92
+        }
+    }
+
+    private func assistantQuestion(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 18, weight: .heavy))
+            .foregroundStyle(Color.hex("#0f172a"))
+    }
+
+    private func assistantNextButton(isEnabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text("Continue")
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(isEnabled ? Color.hex("#0f766e") : Color.hex("#94a3b8"))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+
+    private func amountValue(_ text: String) -> Double {
+        let cleaned = text.replacingOccurrences(of: ",", with: "")
+        let number = cleaned.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted).joined()
+        return Double(number) ?? 0
+    }
+}
+
+struct ProfileFact: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(Color.hex("#64748b"))
+            Text(value)
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f172a"))
+                .lineLimit(2)
+                .minimumScaleFactor(0.82)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.hex("#f8fafc"))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct MoneyInput: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("$")
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f766e"))
+            TextField(title, text: $text)
+                .keyboardType(.decimalPad)
+                .textFieldStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(Color.hex("#f8fafc"))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.hex("#cbd5e1"), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ScoreBadge: View {
+    let title: String
+    let isReady: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: isReady ? "checkmark.circle.fill" : "clock")
+            Text(title)
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+        }
+        .font(.system(size: 12, weight: .heavy))
+        .foregroundStyle(isReady ? Color.hex("#047857") : Color.hex("#92400e"))
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 44)
+        .padding(.horizontal, 8)
+        .background(isReady ? Color.hex("#ecfdf5") : Color.hex("#fffbeb"))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ResultRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.hex("#475569"))
+            Spacer()
+            Text(value)
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f172a"))
+        }
+        .padding(12)
+        .background(Color.hex("#f8fafc"))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct AssistantActionButton: View {
+    let title: String
+    let icon: String
+
+    var body: some View {
+        Button {} label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f766e"))
+                .frame(maxWidth: .infinity)
+                .frame(height: 42)
+                .background(.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct EmptyProfilePanel: View {
+    let icon: String
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(Color.hex("#0f766e"))
+            Text(title)
+                .font(.system(size: 18, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f172a"))
+            Text(message)
+                .font(.system(size: 14))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Color.hex("#64748b"))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(18)
+        .background(.white)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.hex("#e2e8f0"), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1418,39 +3276,6 @@ struct BottomTabBar: View {
                 .fill(Color.hex("#e2e8f0"))
                 .frame(height: 1)
         }
-    }
-}
-
-struct ToolCard: View {
-    let title: String
-    let description: String
-    let isActive: Bool
-    let icon: String
-
-    var body: some View {
-        HStack(spacing: 14) {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.hex("#ccfbf1"))
-                .frame(width: 48, height: 48)
-                .overlay(Image(systemName: icon).foregroundStyle(Color.hex("#0f766e")))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 18, weight: .heavy))
-                Text(description)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.hex("#64748b"))
-            }
-
-            Spacer()
-        }
-        .padding(16)
-        .background(isActive ? Color.hex("#f0fdfa") : .white)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isActive ? Color.hex("#0f766e") : Color.hex("#e2e8f0"), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1643,22 +3468,17 @@ struct RemoteListingImage: View {
     }
 }
 
-struct RemoteAvatarImage: View {
-    let url: String
+struct InitialAvatar: View {
+    let name: String
 
     var body: some View {
-        AsyncImage(url: URL(string: url)) { phase in
-            switch phase {
-            case .success(let image):
-                image
-                    .resizable()
-                    .scaledToFill()
-            default:
-                Circle()
-                    .fill(Color.hex("#cbd5e1"))
-                    .overlay(Image(systemName: "person.fill").foregroundStyle(.white))
-            }
-        }
+        Circle()
+            .fill(Color.hex("#0f766e"))
+            .overlay(
+                Text(String(name.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "G").uppercased())
+                    .font(.system(size: 30, weight: .heavy))
+                    .foregroundStyle(.white)
+            )
     }
 }
 

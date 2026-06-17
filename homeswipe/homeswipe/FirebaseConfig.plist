@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>EXPO_PUBLIC_FIREBASE_API_KEY</key>
-	<string>replace-with-web-app-api-key</string>
+	<string>AIzaSyB8xa8BsRVbJWzhtkvm1dXfF9swp6jvVdQ</string>
 	<key>EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN</key>
 	<string>homeswipe-59d71.firebaseapp.com</string>
 	<key>EXPO_PUBLIC_FIREBASE_PROJECT_ID</key>
@@ -11,10 +11,10 @@
 	<key>EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET</key>
 	<string>homeswipe-59d71.firebasestorage.app</string>
 	<key>EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID</key>
-	<string>replace-with-messaging-sender-id</string>
+	<string>833656475383</string>
 	<key>EXPO_PUBLIC_FIREBASE_APP_ID</key>
-	<string>replace-with-web-app-id</string>
+	<string>1:833656475383:web:31a397629a4a84b6f6cdf2</string>
 	<key>EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID</key>
-	<string>replace-with-measurement-id</string>
+	<string>G-1JCP5E2MMW</string>
 </dict>
 </plist>

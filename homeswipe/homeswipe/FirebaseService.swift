@@ -63,6 +63,14 @@ struct FirebaseSession: Decodable {
 }
 
 struct HomeSwipeUserData: Codable {
+    var profileName: String?
+    var signUpMethod: String?
+    var account: AccountProfileInput?
+    var onboardingRole: OnboardingRole?
+    var tenantOnboarding: TenantOnboardingInput?
+    var listerOnboarding: ListerOnboardingInput?
+    var verificationState: VerificationState?
+    var verificationDocuments: [VerificationDocument]?
     var applications: [RentalApplication]
     var conversations: [Conversation]
     var leases: [LeaseDraft]
