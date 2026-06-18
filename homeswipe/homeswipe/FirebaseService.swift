@@ -63,19 +63,19 @@ struct FirebaseSession: Decodable {
 }
 
 struct HomeSwipeUserData: Codable {
-    var profileName: String?
-    var signUpMethod: String?
-    var account: AccountProfileInput?
-    var onboardingRole: OnboardingRole?
-    var tenantOnboarding: TenantOnboardingInput?
-    var listerOnboarding: ListerOnboardingInput?
-    var verificationState: VerificationState?
-    var verificationDocuments: [VerificationDocument]?
-    var applications: [RentalApplication]
-    var conversations: [Conversation]
-    var leases: [LeaseDraft]
-    var savedListingIDs: [String]
-    var savedSearches: [String]
+    var profileName: String? = nil
+    var signUpMethod: String? = nil
+    var account: AccountProfileInput? = nil
+    var onboardingRole: OnboardingRole? = nil
+    var tenantOnboarding: TenantOnboardingInput? = nil
+    var listerOnboarding: ListerOnboardingInput? = nil
+    var verificationState: VerificationState? = nil
+    var verificationDocuments: [VerificationDocument]? = nil
+    var applications: [RentalApplication] = []
+    var conversations: [Conversation] = []
+    var leases: [LeaseDraft] = []
+    var savedListingIDs: [String] = []
+    var savedSearches: [String] = []
 }
 
 struct HomeSwipeRemoteState {

@@ -103,6 +103,7 @@ enum ListingKind: String, CaseIterable, Identifiable, Codable {
 
 enum ProfileView: String, CaseIterable, Identifiable, Codable {
     case overview
+    case personal
     case saved
     case applications
     case documents
@@ -114,6 +115,8 @@ enum ProfileView: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .overview:
             return "Profile"
+        case .personal:
+            return "Personal Information"
         case .saved:
             return "Saved homes"
         case .applications:
@@ -146,7 +149,7 @@ struct Conversation: Identifiable, Hashable, Codable {
     let person: String
     let role: String
     let listingTitle: String
-    let time: String
+    var time: String
     var messages: [String]
 }
 
@@ -224,6 +227,18 @@ struct AccountProfileInput: Codable {
     var fullName = ""
     var email = ""
     var phone = ""
+    var employer = ""
+    var monthlyBudget = ""
+    var password = ""
+    var forgotPasswordMessage = ""
+
+    enum CodingKeys: String, CodingKey {
+        case fullName
+        case email
+        case phone
+        case employer
+        case monthlyBudget
+    }
 }
 
 struct TenantOnboardingInput: Codable {
@@ -355,14 +370,18 @@ struct ToolInputs {
     var repaymentMonths = "6"
     var contentsValue = ""
     var coverType = "Standard"
+    var insuranceItem = "Buildings"
+    var insuranceSumInsured = ""
+    var insuranceMonths = "12"
     var upgradeType = "Solar Installation"
     var propertyLocation = ""
     var upgradeBudget = ""
     var siteInspection = ""
+    var siteInspectionDate = Date()
     var buildingStage = "Foundation"
     var standLocation = ""
-    var buildSize = ""
     var buildBudget = ""
+    var buildLoanYears = "5"
     var propertyValue = ""
     var propertyType = "House"
     var insuranceLocation = ""
@@ -397,6 +416,12 @@ final class HomeSwipeStore {
     private let onboardingRoleKey = "homeswipe.onboarding.role"
     @ObservationIgnored
     private let verificationStateKey = "homeswipe.verification.state"
+    @ObservationIgnored
+    private let userSnapshotKey = "homeswipe.user.snapshot"
+    @ObservationIgnored
+    private let adminApplicationsEmail = "homeswipelistings@gmail.com"
+    @ObservationIgnored
+    private static let demoConversationIDs: Set<String> = ["moyo-properties", "tari-m", "prime-estates"]
 
     var activeTab: AppTab = .home
     var activeKind: ListingKind = .rentals
@@ -412,14 +437,15 @@ final class HomeSwipeStore {
     var onboardingStep = 0
     var onboardingRole: OnboardingRole?
     var signUpMethod = "Email"
+    var account = AccountProfileInput()
     var tenantOnboarding = TenantOnboardingInput()
     var listerOnboarding = ListerOnboardingInput()
     var verificationState: VerificationState = .notVerified
     var selectedListing: Listing?
     var savedListingIDs: Set<String> = ["1", "4"]
-    var activeConversationID = "moyo-properties"
+    var activeConversationID = ""
     var replyDraft = ""
-    var savedSearches = ["Borrowdale gated 2 bed", "Avondale furnished cottage", "Ruwa serviced stand"]
+    var savedSearches: [String] = []
     var verificationSignals: [VerificationSignal] = []
 
     var listings: [Listing] = [
@@ -509,11 +535,7 @@ final class HomeSwipeStore {
         )
     ]
 
-    var conversations: [Conversation] = [
-        Conversation(id: "moyo-properties", person: "Moyo Properties", role: "Landlord", listingTitle: "Sunny 2 bed apartment", time: "12:45", messages: ["The Borrowdale apartment is open for viewing at 4 PM."]),
-        Conversation(id: "tari-m", person: "Tari M.", role: "Landlord", listingTitle: "Modern garden cottage", time: "10:12", messages: ["Please send your proof of income for screening."]),
-        Conversation(id: "prime-estates", person: "Prime Estates", role: "Agent", listingTitle: "Family home with pool", time: "Mon", messages: ["We can share the title deed docs after registration."])
-    ]
+    var conversations: [Conversation] = []
 
     var applications: [RentalApplication] = []
 
@@ -524,6 +546,7 @@ final class HomeSwipeStore {
 
     init() {
         didCompleteOnboarding = UserDefaults.standard.bool(forKey: onboardingCompleteKey)
+        loadLocalUserSnapshot()
         if let roleValue = UserDefaults.standard.string(forKey: onboardingRoleKey) {
             onboardingRole = OnboardingRole(rawValue: roleValue)
         }
@@ -550,8 +573,9 @@ final class HomeSwipeStore {
     var filteredListings: [Listing] {
         listings.filter { listing in
             let matchesKind = listing.kind == activeKind
-            let searchBlob = "\(listing.title) \(listing.location) \(listing.meta) \(listing.description) \(listing.amenities.joined(separator: " ")) \(listing.details.joined(separator: " "))".lowercased()
-            let matchesSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || searchBlob.contains(searchText.lowercased())
+            let searchBlob = listingSearchText(listing)
+            let normalizedSearch = normalizeSearch(searchText)
+            let matchesSearch = normalizedSearch.isEmpty || searchBlob.contains(normalizedSearch)
             let matchesAmenity = filters.amenity.isEmpty || searchBlob.contains(filters.amenity.lowercased())
             let matchesSaved = !filters.savedOnly || savedListingIDs.contains(listing.id)
             let price = numberValue(in: listing.price)
@@ -571,6 +595,47 @@ final class HomeSwipeStore {
                 && (bedrooms == 0 || listingBedrooms >= bedrooms)
                 && (bathrooms == 0 || listingBathrooms >= bathrooms)
         }
+        .sorted { first, second in
+            let normalizedSearch = normalizeSearch(searchText)
+            if !normalizedSearch.isEmpty {
+                return listingSearchScore(first, for: normalizedSearch) > listingSearchScore(second, for: normalizedSearch)
+            }
+            if !savedSearches.isEmpty {
+                let firstScore = listingInterestScore(first)
+                let secondScore = listingInterestScore(second)
+                if firstScore != secondScore {
+                    return firstScore > secondScore
+                }
+            }
+            return first.title < second.title
+        }
+    }
+
+    var searchSuggestions: [String] {
+        let normalized = normalizeSearch(searchText)
+        let listingParts = listings
+            .filter { $0.kind == activeKind }
+            .flatMap { listing in
+                [listing.location, listing.title, listing.meta, listing.price, listing.description] + listing.amenities + listing.details
+            }
+        let terms = (savedSearches + Self.zimbabweSearchTerms + listingParts)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count > 1 }
+        var seen = Set<String>()
+        let unique = terms.filter { seen.insert(normalizeSearch($0)).inserted }
+        if normalized.isEmpty {
+            return Array(unique.prefix(10))
+        }
+        let matching = unique.filter { suggestionScore($0, query: normalized) > 0 }
+        let sorted = matching.sorted { first, second in
+            let firstScore = suggestionScore(first, query: normalized)
+            let secondScore = suggestionScore(second, query: normalized)
+            if firstScore == secondScore {
+                return first.count < second.count
+            }
+            return firstScore > secondScore
+        }
+        return Array(sorted.prefix(10))
     }
 
     var savedListings: [Listing] {
@@ -629,11 +694,19 @@ final class HomeSwipeStore {
     }
 
     var activeConversation: Conversation? {
-        conversations.first(where: { $0.id == activeConversationID }) ?? conversations.first
+        conversations.first(where: { $0.id == activeConversationID })
     }
 
     private var currentUserData: HomeSwipeUserData {
         HomeSwipeUserData(
+            profileName: profileName,
+            signUpMethod: signUpMethod,
+            account: account,
+            onboardingRole: onboardingRole,
+            tenantOnboarding: tenantOnboarding,
+            listerOnboarding: listerOnboarding,
+            verificationState: verificationState,
+            verificationDocuments: documents,
             applications: applications,
             conversations: conversations,
             leases: leases,
@@ -662,8 +735,9 @@ final class HomeSwipeStore {
             }
 
             if let userData = remoteState.userData {
+                applyUserData(userData)
                 applications = userData.applications.filter { !Self.demoApplicationIDs.contains($0.id) }
-                conversations = userData.conversations
+                conversations = userData.conversations.filter { !Self.demoConversationIDs.contains($0.id) }
                 leases = userData.leases.filter { !Self.demoLeaseIDs.contains($0.id) }
                 savedListingIDs = Set(userData.savedListingIDs)
                 savedSearches = userData.savedSearches
@@ -761,12 +835,35 @@ final class HomeSwipeStore {
         syncUserData()
     }
 
+    func startChat(for listing: Listing) {
+        let conversationID = "listing-\(listing.id)"
+        if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[index].time = "Now"
+        } else {
+            conversations.insert(
+                Conversation(
+                    id: conversationID,
+                    person: listing.host,
+                    role: listing.kind == .rentals ? "Landlord" : "Agent",
+                    listingTitle: listing.title,
+                    time: "Now",
+                    messages: ["Hi, I am interested in \(listing.title). Is it still available?"]
+                ),
+                at: 0
+            )
+        }
+        activeConversationID = conversationID
+        activeTab = .messages
+        syncUserData()
+    }
+
     func markDocumentReady(_ document: VerificationDocument, fileName: String = "Uploaded document") {
         guard let index = documents.firstIndex(of: document) else { return }
         documents[index].status = "Verified"
         documents[index].fileName = fileName
         verificationState = documents.allSatisfy { $0.status == "Verified" } ? .verified : .pendingReview
         persistOnboardingState()
+        persistLocalUserSnapshot()
         syncUserData()
     }
 
@@ -781,14 +878,16 @@ final class HomeSwipeStore {
         if onboardingStep == 0 {
             configureVerificationDocuments()
             onboardingStep = 1
+            persistLocalUserSnapshot()
             return
         }
 
         onboardingStep += 1
-        if onboardingStep == 3 {
+        if onboardingStep == verificationStepIndex {
             configureVerificationDocuments()
         }
-        if onboardingStep > 4 {
+        persistLocalUserSnapshot()
+        if onboardingStep > finalOnboardingStep {
             finishOnboarding()
         }
     }
@@ -807,6 +906,7 @@ final class HomeSwipeStore {
         }
 
         persistOnboardingState()
+        persistLocalUserSnapshot()
         syncUserData()
     }
 
@@ -816,15 +916,120 @@ final class HomeSwipeStore {
     }
 
     func configureVerificationDocuments() {
-        documents = requiredVerificationDocuments(for: onboardingRole, listerType: listerOnboarding.listerType)
+        let currentByID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
+        documents = requiredVerificationDocuments(for: onboardingRole, listerType: listerOnboarding.listerType).map { required in
+            guard let existing = currentByID[required.id] else { return required }
+            var merged = required
+            merged.status = existing.status
+            merged.fileName = existing.fileName
+            return merged
+        }
     }
 
     private func persistOnboardingState() {
+        if !account.fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            profileName = account.fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         UserDefaults.standard.set(didCompleteOnboarding, forKey: onboardingCompleteKey)
         if let onboardingRole {
             UserDefaults.standard.set(onboardingRole.rawValue, forKey: onboardingRoleKey)
         }
         UserDefaults.standard.set(verificationState.rawValue, forKey: verificationStateKey)
+    }
+
+    var verificationStepIndex: Int {
+        onboardingRole == .tenant ? 9 : 5
+    }
+
+    var finalOnboardingStep: Int {
+        onboardingRole == .tenant ? 10 : 6
+    }
+
+    func continueFromSignup() {
+        if signUpMethod != "Email" {
+            account.forgotPasswordMessage = ""
+            if account.fullName.isEmpty {
+                profileName = signUpMethod == "Apple" ? "Apple User" : "Google User"
+                account.fullName = profileName
+            }
+            onboardingStep = 1
+            persistLocalUserSnapshot()
+            return
+        }
+
+        profileName = account.fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Guest" : account.fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        account.forgotPasswordMessage = ""
+        onboardingStep = 1
+        persistLocalUserSnapshot()
+    }
+
+    func requestPasswordReset() {
+        let email = account.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        account.forgotPasswordMessage = email.isEmpty ? "Enter your email first, then request a reset link." : "Password reset request prepared for \(email)."
+        persistLocalUserSnapshot()
+    }
+
+    func saveProfileDetails() {
+        let name = account.fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let email = account.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        account.fullName = name
+        account.email = email
+        account.phone = account.phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        account.employer = account.employer.trimmingCharacters(in: .whitespacesAndNewlines)
+        account.monthlyBudget = account.monthlyBudget.trimmingCharacters(in: .whitespacesAndNewlines)
+        account.password = ""
+        account.forgotPasswordMessage = ""
+        profileName = name.isEmpty ? profileName : name
+        activeProfileView = .overview
+        syncUserData()
+    }
+
+    func submitToolApplication(title: String, report: ToolReport) {
+        let submittedDate = Date.now.formatted(date: .abbreviated, time: .omitted)
+        let summary = report.results.prefix(3).map { "\($0.0): \($0.1)" }.joined(separator: " · ")
+        let application = RentalApplication(
+            id: UUID().uuidString,
+            listingID: "tool-\(title.lowercased().replacingOccurrences(of: " ", with: "-"))",
+            property: title,
+            landlord: "HomeSwipe Finance",
+            status: "In Review",
+            submitted: submittedDate,
+            nextStep: "\(summary). Sent for HomeSwipe review at \(adminApplicationsEmail)."
+        )
+        applications.insert(application, at: 0)
+        activeProfileView = .applications
+        activeTab = .profile
+        persistLocalUserSnapshot()
+        syncUserData()
+    }
+
+    private func applyUserData(_ userData: HomeSwipeUserData) {
+        profileName = userData.profileName ?? profileName
+        signUpMethod = userData.signUpMethod ?? signUpMethod
+        account = userData.account ?? account
+        onboardingRole = userData.onboardingRole ?? onboardingRole
+        tenantOnboarding = userData.tenantOnboarding ?? tenantOnboarding
+        listerOnboarding = userData.listerOnboarding ?? listerOnboarding
+        verificationState = userData.verificationState ?? verificationState
+        if let remoteDocuments = userData.verificationDocuments, !remoteDocuments.isEmpty {
+            documents = remoteDocuments
+        }
+        persistOnboardingState()
+        persistLocalUserSnapshot()
+    }
+
+    private func persistLocalUserSnapshot() {
+        if let data = try? JSONEncoder().encode(currentUserData) {
+            UserDefaults.standard.set(data, forKey: userSnapshotKey)
+        }
+    }
+
+    private func loadLocalUserSnapshot() {
+        guard let data = UserDefaults.standard.data(forKey: userSnapshotKey),
+              let snapshot = try? JSONDecoder().decode(HomeSwipeUserData.self, from: data) else {
+            return
+        }
+        applyUserData(snapshot)
     }
 
     func runVerification() {
@@ -847,6 +1052,8 @@ final class HomeSwipeStore {
     }
 
     func syncUserData() {
+        persistOnboardingState()
+        persistLocalUserSnapshot()
         guard firebaseStatus != "Not configured" else { return }
         let payload = currentUserData
         firebaseStatus = "Saving"
@@ -892,6 +1099,79 @@ final class HomeSwipeStore {
 
     private static let demoApplicationIDs: Set<String> = ["application-1", "application-2", "application-3"]
     private static let demoLeaseIDs: Set<String> = ["lease-1"]
+    private static let zimbabweSearchTerms = [
+        "Harare", "Bulawayo", "Mutare", "Gweru", "Masvingo", "Chitungwiza", "Victoria Falls", "Kadoma", "Kwekwe", "Marondera", "Ruwa", "Norton",
+        "Borrowdale", "Avondale", "Mount Pleasant", "Greendale", "Highlands", "Marlborough", "Eastlea", "Newlands", "Mabelreign", "Waterfalls",
+        "Famona", "Khumalo", "Burnside", "Hillside", "Suburbs", "Cottage", "Apartment", "House", "Townhouse", "Stand", "Serviced stand",
+        "Borehole", "Solar backup", "Gated", "Furnished", "Parking", "Pool", "Garden", "Road access", "Council stand"
+    ]
+
+    func recordSearchInterest(_ search: String) {
+        let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 1 else { return }
+        savedSearches.removeAll { normalizeSearch($0) == normalizeSearch(trimmed) }
+        savedSearches.insert(trimmed, at: 0)
+        if savedSearches.count > 30 {
+            savedSearches = Array(savedSearches.prefix(30))
+        }
+        syncUserData()
+    }
+
+    private func normalizeSearch(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func searchTokens(_ value: String) -> [String] {
+        normalizeSearch(value)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 1 }
+    }
+
+    private func suggestionScore(_ suggestion: String, query: String) -> Int {
+        let value = normalizeSearch(suggestion)
+        if value.hasPrefix(query) {
+            return 2
+        }
+        if value.contains(query) {
+            return 1
+        }
+        return 0
+    }
+
+    private func listingSearchText(_ listing: Listing) -> String {
+        normalizeSearch("\(listing.title) \(listing.location) \(listing.meta) \(listing.price) \(listing.description) \(listing.amenities.joined(separator: " ")) \(listing.details.joined(separator: " "))")
+    }
+
+    private func listingSearchScore(_ listing: Listing, for search: String) -> Int {
+        let normalized = normalizeSearch(search)
+        guard !normalized.isEmpty else { return 0 }
+        let tokens = searchTokens(normalized)
+        let title = normalizeSearch(listing.title)
+        let location = normalizeSearch(listing.location)
+        let meta = normalizeSearch(listing.meta)
+        let amenities = normalizeSearch(listing.amenities.joined(separator: " "))
+        let details = normalizeSearch(listing.details.joined(separator: " "))
+        let searchable = listingSearchText(listing)
+        var score = searchable.contains(normalized) ? 12 : 0
+        for token in tokens {
+            if title.contains(token) { score += 9 }
+            if location.contains(token) { score += 8 }
+            if amenities.contains(token) { score += 6 }
+            if meta.contains(token) || details.contains(token) { score += 5 }
+        }
+        return score
+    }
+
+    private func listingInterestScore(_ listing: Listing) -> Int {
+        savedSearches.prefix(12).enumerated().reduce(0) { partial, item in
+            let score = listingSearchScore(listing, for: item.element)
+            return partial + (score > 0 ? max(1, 12 - item.offset) + score : 0)
+        }
+    }
 
     private func numberValue(in text: String) -> Double {
         let cleaned = text.replacingOccurrences(of: ",", with: "")
@@ -937,6 +1217,8 @@ struct OnboardingScreen: View {
 
                 if store.onboardingStep == 0 {
                     signUpStep
+                } else if store.onboardingStep == 1 {
+                    roleStep
                 } else if store.onboardingRole == .tenant {
                     tenantStep
                 } else {
@@ -962,7 +1244,7 @@ struct OnboardingScreen: View {
 
     private var onboardingProgress: some View {
         HStack(spacing: 8) {
-            ForEach(0..<5, id: \.self) { step in
+            ForEach(0...store.finalOnboardingStep, id: \.self) { step in
                 Capsule()
                     .fill(step <= store.onboardingStep ? Color.hex("#0f766e") : Color.hex("#dbeafe"))
                     .frame(height: 5)
@@ -975,20 +1257,55 @@ struct OnboardingScreen: View {
             PageTitle(title: "Welcome to HomeSwipe", subtitle: "Find homes or list properties with confidence.")
 
             VStack(spacing: 10) {
-                OnboardingActionButton(title: "Continue with Google", icon: "g.circle") {
+                OnboardingActionButton(title: "Sign up with Google", icon: "g.circle") {
                     store.signUpMethod = "Google"
                 }
-                OnboardingActionButton(title: "Continue with Apple", icon: "apple.logo") {
+                OnboardingActionButton(title: "Sign up with Apple", icon: "apple.logo") {
                     store.signUpMethod = "Apple"
                 }
-                OnboardingActionButton(title: "Continue with Email", icon: "envelope") {
+                OnboardingActionButton(title: "Sign up with Email", icon: "envelope") {
                     store.signUpMethod = "Email"
                 }
             }
 
+            if store.signUpMethod == "Email" {
+                VStack(alignment: .leading, spacing: 12) {
+                    AccountTextField(title: "Full name", text: $store.account.fullName)
+                    AccountTextField(title: "Email", text: $store.account.email, keyboard: .emailAddress)
+                    AccountSecureField(title: "Password", text: $store.account.password)
+                    Button {
+                        store.requestPasswordReset()
+                    } label: {
+                        Text("Forgot password?")
+                            .font(.system(size: 13, weight: .heavy))
+                            .foregroundStyle(Color.hex("#0f766e"))
+                    }
+                    .buttonStyle(.plain)
+                    if !store.account.forgotPasswordMessage.isEmpty {
+                        Text(store.account.forgotPasswordMessage)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.hex("#64748b"))
+                    }
+                }
+                .cardStyle()
+            }
+
+            PrimaryOnboardingButton(title: "Continue", isEnabled: store.signUpMethod != "Email" || isEmailSignupComplete) {
+                store.continueFromSignup()
+            }
+        }
+    }
+
+    private var isEmailSignupComplete: Bool {
+        !store.account.fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && store.account.email.contains("@")
+            && store.account.password.count >= 6
+    }
+
+    private var roleStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            PageTitle(title: "How will you use HomeSwipe?", subtitle: "Choose one role. We will only ask for information relevant to that role.")
             VStack(alignment: .leading, spacing: 12) {
-                Text("How will you use HomeSwipe?")
-                    .font(.system(size: 20, weight: .heavy))
                 ForEach(OnboardingRole.allCases) { role in
                     ChoiceButton(title: role.rawValue, isSelected: store.onboardingRole == role) {
                         store.onboardingRole = role
@@ -1006,28 +1323,42 @@ struct OnboardingScreen: View {
     @ViewBuilder
     private var tenantStep: some View {
         switch store.onboardingStep {
-        case 1:
-            VStack(alignment: .leading, spacing: 18) {
-                PageTitle(title: "What are you looking for?", subtitle: "Set your search basics so HomeSwipe can prioritize better matches.")
-                SingleChoiceSection(title: "Which city are you searching in?", options: cities, selection: $store.tenantOnboarding.city)
-                SingleChoiceSection(title: "Monthly Budget", options: budgets, selection: $store.tenantOnboarding.budget)
-                MultiChoiceSection(title: "Property Types", options: propertyTypes, selections: $store.tenantOnboarding.propertyTypes)
-                MultiChoiceSection(title: "Amenities", options: amenities, selections: $store.tenantOnboarding.amenities)
-                PrimaryOnboardingButton(title: "Continue", isEnabled: store.isTenantOnboardingComplete) {
-                    store.advanceOnboarding()
-                }
-            }
         case 2:
             VStack(alignment: .leading, spacing: 18) {
-                PageTitle(title: "Tell Landlords More About You", subtitle: "A stronger profile helps landlords understand fit before they reply.")
-                SingleChoiceSection(title: "Employment Status", options: employmentStatuses, selection: $store.tenantOnboarding.employmentStatus)
-                MultiChoiceSection(title: "Household Type", options: householdTypes, selections: $store.tenantOnboarding.householdTypes)
-                MultiChoiceSection(title: "Lease Preference", options: leasePreferences, selections: $store.tenantOnboarding.leasePreferences)
-                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.employmentStatus.isEmpty) {
-                    store.advanceOnboarding()
-                }
+                SingleChoiceSection(title: "Which city are you searching in?", options: cities, selection: $store.tenantOnboarding.city)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.city.isEmpty) { store.advanceOnboarding() }
             }
         case 3:
+            VStack(alignment: .leading, spacing: 18) {
+                SingleChoiceSection(title: "Monthly Budget", options: budgets, selection: $store.tenantOnboarding.budget)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.budget.isEmpty) { store.advanceOnboarding() }
+            }
+        case 4:
+            VStack(alignment: .leading, spacing: 18) {
+                MultiChoiceSection(title: "Property Types", options: propertyTypes, selections: $store.tenantOnboarding.propertyTypes)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.propertyTypes.isEmpty) { store.advanceOnboarding() }
+            }
+        case 5:
+            VStack(alignment: .leading, spacing: 18) {
+                MultiChoiceSection(title: "Amenities", options: amenities, selections: $store.tenantOnboarding.amenities)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: true) { store.advanceOnboarding() }
+            }
+        case 6:
+            VStack(alignment: .leading, spacing: 18) {
+                SingleChoiceSection(title: "Employment Status", options: employmentStatuses, selection: $store.tenantOnboarding.employmentStatus)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.employmentStatus.isEmpty) { store.advanceOnboarding() }
+            }
+        case 7:
+            VStack(alignment: .leading, spacing: 18) {
+                MultiChoiceSection(title: "Household Type", options: householdTypes, selections: $store.tenantOnboarding.householdTypes)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.householdTypes.isEmpty) { store.advanceOnboarding() }
+            }
+        case 8:
+            VStack(alignment: .leading, spacing: 18) {
+                MultiChoiceSection(title: "Lease Preference", options: leasePreferences, selections: $store.tenantOnboarding.leasePreferences)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.tenantOnboarding.leasePreferences.isEmpty) { store.advanceOnboarding() }
+            }
+        case 9:
             verificationStep(title: "Get Verified", message: "Upload the required tenant documents to unlock your verified profile badge.")
         default:
             readyStep(title: "You're All Set", message: "Start discovering homes that match your preferences.", buttonTitle: "Start Browsing")
@@ -1037,28 +1368,22 @@ struct OnboardingScreen: View {
     @ViewBuilder
     private var listerStep: some View {
         switch store.onboardingStep {
-        case 1:
-            VStack(alignment: .leading, spacing: 18) {
-                PageTitle(title: "Tell Us About Your Properties", subtitle: "Set up your lister profile before publishing your first home.")
-                SingleChoiceSection(title: "I am a:", options: listerTypes, selection: $store.listerOnboarding.listerType)
-                SingleChoiceSection(title: "Primary Location", options: cities, selection: $store.listerOnboarding.primaryLocation)
-                SingleChoiceSection(title: "Number of Properties", options: propertyCounts, selection: $store.listerOnboarding.propertyCount)
-                PrimaryOnboardingButton(title: "Continue", isEnabled: store.isListerOnboardingComplete) {
-                    store.advanceOnboarding()
-                }
-            }
         case 2:
             VStack(alignment: .leading, spacing: 18) {
-                PageTitle(title: "Create Your First Listing", subtitle: "Use the same property system that powers the HomeSwipe dashboard.")
-                AddListingPanel(store: $store)
-                Text("You can skip this step and add properties later from your dashboard.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.hex("#64748b"))
-                PrimaryOnboardingButton(title: "Continue", isEnabled: true) {
-                    store.advanceOnboarding()
-                }
+                SingleChoiceSection(title: "I am a:", options: listerTypes, selection: $store.listerOnboarding.listerType)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.listerOnboarding.listerType.isEmpty) { store.advanceOnboarding() }
             }
         case 3:
+            VStack(alignment: .leading, spacing: 18) {
+                SingleChoiceSection(title: "Primary Location", options: cities, selection: $store.listerOnboarding.primaryLocation)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.listerOnboarding.primaryLocation.isEmpty) { store.advanceOnboarding() }
+            }
+        case 4:
+            VStack(alignment: .leading, spacing: 18) {
+                SingleChoiceSection(title: "Number of Properties", options: propertyCounts, selection: $store.listerOnboarding.propertyCount)
+                PrimaryOnboardingButton(title: "Continue", isEnabled: !store.listerOnboarding.propertyCount.isEmpty) { store.advanceOnboarding() }
+            }
+        case 5:
             verificationStep(title: "Become a Verified \(store.verificationRoleLabel)", message: "Upload only the documents required for \(store.verificationRoleLabel).")
         default:
             readyStep(title: "You're All Set", message: "Start managing listings, messages, and verification from your dashboard.", buttonTitle: "Go to Dashboard")
@@ -1162,6 +1487,56 @@ struct SingleChoiceSection: View {
             }
         }
         .cardStyle()
+    }
+}
+
+struct AccountTextField: View {
+    let title: String
+    @Binding var text: String
+    var keyboard: UIKeyboardType = .default
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(Color.hex("#334155"))
+            TextField(title, text: $text)
+                .keyboardType(keyboard)
+                .textInputAutocapitalization(keyboard == .emailAddress ? .never : .words)
+                .autocorrectionDisabled(keyboard == .emailAddress)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .frame(height: 46)
+                .background(Color.hex("#f8fafc"))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#cbd5e1"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
+struct AccountSecureField: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(Color.hex("#334155"))
+            SecureField(title, text: $text)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .frame(height: 46)
+                .background(Color.hex("#f8fafc"))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#cbd5e1"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
     }
 }
 
@@ -1332,7 +1707,11 @@ struct HomeScreen: View {
                             listing: listing,
                             isSaved: store.savedListingIDs.contains(listing.id),
                             onToggleSaved: { store.toggleSaved(listing) },
-                            onOpen: { store.selectedListing = listing }
+                            onChat: { store.startChat(for: listing) },
+                            onOpen: {
+                                store.recordSearchInterest(listing.location)
+                                store.selectedListing = listing
+                            }
                         )
                     }
                 }
@@ -1349,6 +1728,20 @@ struct ToolsScreen: View {
     @State private var activeTool: ToolKind?
     @State private var toolStep = 0
     @State private var toolInputs = ToolInputs()
+    private let insuranceItems = ["Buildings", "Contents", "Clothing and Personal effects", "Spectacles", "Cellphones", "Jewellery", "Wedding Rings"]
+    private let insurancePeriods = ["4", "8", "12"]
+
+    init(
+        store: Binding<HomeSwipeStore>,
+        initialActiveTool: ToolKind? = nil,
+        initialToolStep: Int = 0,
+        initialToolInputs: ToolInputs = ToolInputs()
+    ) {
+        self._store = store
+        self._activeTool = State(initialValue: initialActiveTool)
+        self._toolStep = State(initialValue: initialToolStep)
+        self._toolInputs = State(initialValue: initialToolInputs)
+    }
 
     var body: some View {
         Group {
@@ -1436,7 +1829,9 @@ struct ToolsScreen: View {
                 if tool == .leases {
                     leaseToolFlow
                 } else if let report = report(for: tool), toolStep >= questionCount(for: tool) {
-                    ToolReportView(report: report, shareText: reportShareText(report), primaryActions: primaryActions(for: tool))
+                    ToolReportView(report: report, shareText: reportShareText(report), primaryActions: primaryActions(for: tool)) { actionTitle in
+                        store.submitToolApplication(title: actionTitle, report: report)
+                    }
                 } else {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
@@ -1611,8 +2006,12 @@ struct ToolsScreen: View {
         case .householdInsurance:
             switch step {
             case 0: currencyPicker
-            case 1: ToolValueInput(title: "Household Contents Value", text: $toolInputs.contentsValue, prefix: toolInputs.currency, keyboard: .decimalPad)
-            default: optionPicker(title: "Cover Type", options: ["Basic", "Standard", "Premium"], selection: $toolInputs.coverType)
+            case 1: optionPicker(title: "Item to set sum insured", options: insuranceItems, selection: $toolInputs.insuranceItem)
+            case 2: ToolValueInput(title: "\(toolInputs.insuranceItem) Insurance", text: $toolInputs.insuranceSumInsured, helper: "Enter amount. Example: 20000", prefix: toolInputs.currency, keyboard: .decimalPad)
+            default: optionPicker(title: "Period of Cover", options: insurancePeriods.map { "\($0) Months" }, selection: Binding(
+                get: { "\(toolInputs.insuranceMonths) Months" },
+                set: { toolInputs.insuranceMonths = $0.replacingOccurrences(of: " Months", with: "") }
+            ))
             }
         case .propertyUpgrades:
             switch step {
@@ -1620,23 +2019,26 @@ struct ToolsScreen: View {
             case 1: optionPicker(title: "Upgrade Type", options: ["Solar Installation", "Boreholes", "Kitchens", "Roofing", "Tiling", "Security Systems", "Boundary Walls", "Painting", "Extensions"], selection: $toolInputs.upgradeType)
             case 2: ToolValueInput(title: "Property Location", text: $toolInputs.propertyLocation)
             case 3: ToolValueInput(title: "Estimated Budget", text: $toolInputs.upgradeBudget, prefix: toolInputs.currency, keyboard: .decimalPad)
-            default: ToolValueInput(title: "Schedule Site Inspection", text: $toolInputs.siteInspection, placeholder: "Preferred date or time")
+            default: ToolDatePicker(title: "Schedule Site Inspection", date: $toolInputs.siteInspectionDate)
             }
         case .buildingFinancing:
             switch step {
             case 0: currencyPicker
             case 1: optionPicker(title: "Building Stage", options: ["Foundation", "Walls", "Roofing", "Finishing", "Full Build"], selection: $toolInputs.buildingStage)
             case 2: ToolValueInput(title: "Stand Location", text: $toolInputs.standLocation)
-            case 3: ToolValueInput(title: "Estimated Build Size", text: $toolInputs.buildSize, suffix: "sqm", keyboard: .decimalPad)
+            case 3: ToolValueInput(title: "Loan Duration", text: $toolInputs.buildLoanYears, helper: "Enter duration in years", suffix: "Years", keyboard: .numberPad)
             case 4: ToolValueInput(title: "Estimated Budget", text: $toolInputs.buildBudget, prefix: toolInputs.currency, keyboard: .decimalPad)
-            default: ToolValueInput(title: "Schedule Site Inspection", text: $toolInputs.siteInspection, placeholder: "Preferred date or time")
+            default: ToolDatePicker(title: "Schedule Site Inspection", date: $toolInputs.siteInspectionDate)
             }
         case .homeInsurance:
             switch step {
             case 0: currencyPicker
-            case 1: ToolValueInput(title: "Property Value", text: $toolInputs.propertyValue, prefix: toolInputs.currency, keyboard: .decimalPad)
-            case 2: optionPicker(title: "Property Type", options: ["House", "Apartment", "Townhouse", "Cottage"], selection: $toolInputs.propertyType)
-            default: ToolValueInput(title: "Property Location", text: $toolInputs.insuranceLocation)
+            case 1: optionPicker(title: "Item to set sum insured", options: insuranceItems, selection: $toolInputs.insuranceItem)
+            case 2: ToolValueInput(title: "\(toolInputs.insuranceItem) Insurance", text: $toolInputs.insuranceSumInsured, helper: "Enter amount. Example: 20000", prefix: toolInputs.currency, keyboard: .decimalPad)
+            default: optionPicker(title: "Period of Cover", options: insurancePeriods.map { "\($0) Months" }, selection: Binding(
+                get: { "\(toolInputs.insuranceMonths) Months" },
+                set: { toolInputs.insuranceMonths = $0.replacingOccurrences(of: " Months", with: "") }
+            ))
             }
         case .leases:
             EmptyView()
@@ -1683,8 +2085,8 @@ struct ToolsScreen: View {
 
     private func questionCount(for tool: ToolKind) -> Int {
         switch tool {
-        case .householdInsurance: return 3
-        case .homeInsurance, .rentLoan, .homeLoan: return 4
+        case .householdInsurance, .homeInsurance: return 4
+        case .rentLoan, .homeLoan: return 4
         case .propertyUpgrades: return 5
         case .buildingFinancing: return 6
         case .leases: return leaseFields.count
@@ -1789,29 +2191,51 @@ struct ToolsScreen: View {
                 notes: ["Rent loan estimates exclude security deposits and are based only on rent financing requirements."]
             )
         case .householdInsurance:
-            let value = amount(toolInputs.contentsValue)
-            let rate = ["Basic": 0.008, "Standard": 0.012, "Premium": 0.018][toolInputs.coverType] ?? 0.012
-            let annual = value * rate
-            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Contents Value", money(currency, value)), ("Cover Type", toolInputs.coverType)], results: [("Estimated Monthly Premium", money(currency, annual / 12)), ("Estimated Annual Premium", money(currency, annual)), ("Cover Type", toolInputs.coverType), ("Insured Value", money(currency, value))])
+            return insuranceReport(title: "Home, Household and Specified Items Insurance", actionTitle: tool.rawValue)
         case .propertyUpgrades:
             let budget = amount(toolInputs.upgradeBudget)
             let total = budget + budget * interestRate * 3
-            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Upgrade Type", toolInputs.upgradeType), ("Property Location", fallback(toolInputs.propertyLocation)), ("Estimated Budget", money(currency, budget)), ("Site Inspection", fallback(toolInputs.siteInspection, "To be scheduled"))], results: [("Estimated Project Cost", money(currency, budget)), ("Estimated Monthly Repayment", money(currency, total / 36)), ("Finance Amount", money(currency, budget)), ("Interest Rate", "12.5%"), ("Project Timeline", budget > 20000 ? "8-16 weeks" : "3-8 weeks")], notes: ["HomeSwipe controls the project, suppliers, contractors, payments, inspections and completion process.", "Funds are paid directly to approved suppliers and contractors, not to the customer."])
+            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Upgrade Type", toolInputs.upgradeType), ("Property Location", fallback(toolInputs.propertyLocation)), ("Estimated Budget", money(currency, budget)), ("Site Inspection", dateLabel(toolInputs.siteInspectionDate))], results: [("Estimated Project Cost", money(currency, budget)), ("Estimated Monthly Repayment", money(currency, total / 36)), ("Finance Amount", money(currency, budget)), ("Interest Rate", "12.5%"), ("Project Timeline", budget > 20000 ? "8-16 weeks" : "3-8 weeks")], notes: ["HomeSwipe controls the project, suppliers, contractors, payments, inspections and completion process.", "Funds are paid directly to approved suppliers and contractors, not to the customer."])
         case .buildingFinancing:
             let budget = amount(toolInputs.buildBudget)
-            let size = amount(toolInputs.buildSize)
-            let stageMultipliers: [String: Double] = ["Foundation": 0.2, "Walls": 0.35, "Roofing": 0.25, "Finishing": 0.3, "Full Build": 1.0]
-            let multiplier = stageMultipliers[toolInputs.buildingStage] ?? 1.0
-            let estimated = max(budget, size * 450 * multiplier)
-            let total = estimated + estimated * interestRate * 5
-            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Building Stage", toolInputs.buildingStage), ("Stand Location", fallback(toolInputs.standLocation)), ("Estimated Build Size", "\(Int(size)) sqm"), ("Estimated Budget", money(currency, budget)), ("Site Inspection", fallback(toolInputs.siteInspection, "To be scheduled"))], results: [("Estimated Building Cost", money(currency, estimated)), ("Finance Amount", money(currency, estimated)), ("Monthly Repayment", money(currency, total / 60)), ("Interest Rate", "12.5%"), ("Project Timeline", toolInputs.buildingStage == "Full Build" ? "6-12 months" : "6-20 weeks")], notes: ["HomeSwipe oversees construction, suppliers, contractors, quality control, inspections and project completion.", "Payments are made directly to suppliers and contractors in approved project stages."])
+            let years = max(1, amount(toolInputs.buildLoanYears))
+            let total = budget + budget * interestRate * years
+            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Building Stage", toolInputs.buildingStage), ("Stand Location", fallback(toolInputs.standLocation)), ("Loan Duration", "\(Int(years)) years"), ("Estimated Budget", money(currency, budget)), ("Site Inspection", dateLabel(toolInputs.siteInspectionDate))], results: [("Estimated Building Cost", money(currency, budget)), ("Finance Amount", money(currency, budget)), ("Monthly Repayment", money(currency, total / (years * 12))), ("Interest Rate", "12.5%"), ("Project Timeline", toolInputs.buildingStage == "Full Build" ? "6-12 months" : "6-20 weeks")], notes: ["HomeSwipe oversees construction, suppliers, contractors, quality control, inspections and project completion.", "Payments are made directly to suppliers and contractors in approved project stages."])
         case .homeInsurance:
-            let value = amount(toolInputs.propertyValue)
-            let annual = value * 0.006
-            return ToolReport(title: tool.rawValue, inputs: [("Currency", currency), ("Property Value", money(currency, value)), ("Property Type", toolInputs.propertyType), ("Property Location", fallback(toolInputs.insuranceLocation))], results: [("Estimated Monthly Premium", money(currency, annual / 12)), ("Estimated Annual Premium", money(currency, annual)), ("Property Value", money(currency, value)), ("Property Type", toolInputs.propertyType), ("Property Location", fallback(toolInputs.insuranceLocation))])
+            return insuranceReport(title: "Home, Household and Specified Items Insurance", actionTitle: tool.rawValue)
         case .leases:
             return nil
         }
+    }
+
+    private func insuranceReport(title: String, actionTitle: String) -> ToolReport {
+        let currency = toolInputs.currency
+        let sumInsured = amount(toolInputs.insuranceSumInsured)
+        let ratePercent = 0.12
+        let months = max(4, amount(toolInputs.insuranceMonths) == 0 ? 12 : amount(toolInputs.insuranceMonths))
+        let premium = sumInsured * (ratePercent / 100) * (months / 12)
+        let stampDuty = premium * 0.05
+        let totalDue = premium + stampDuty
+        let rateLabel = ratePercent.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(ratePercent))%" : "\(String(format: "%.2f", ratePercent))%"
+
+        return ToolReport(
+            title: title,
+            inputs: [
+                ("Currency", currency),
+                ("Item Insured", toolInputs.insuranceItem),
+                ("Sum Insured", money(currency, sumInsured)),
+                ("Insurance Rate", rateLabel),
+                ("Period of Cover", "\(Int(months)) months")
+            ],
+            results: [
+                ("Item", toolInputs.insuranceItem),
+                ("Sum Insured", money(currency, sumInsured)),
+                ("Premium", money(currency, premium)),
+                ("Stamp Duty", money(currency, stampDuty)),
+                ("Total Due", money(currency, totalDue))
+            ],
+            notes: ["Insurance premium uses the selected rate and period of cover. Stamp duty is calculated at 5% of the premium."]
+        )
     }
 
     private func amount(_ text: String) -> Double {
@@ -1826,6 +2250,10 @@ struct ToolsScreen: View {
 
     private func fallback(_ value: String, _ fallback: String = "Not provided") -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : value
+    }
+
+    private func dateLabel(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .omitted)
     }
 }
 
@@ -1880,10 +2308,36 @@ struct ToolValueInput: View {
     }
 }
 
+struct ToolDatePicker: View {
+    let title: String
+    @Binding var date: Date
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text(title)
+                .font(.system(size: 18, weight: .heavy))
+                .foregroundStyle(Color.hex("#0f172a"))
+                .multilineTextAlignment(.center)
+            DatePicker("Select a day", selection: $date, displayedComponents: [.date])
+                .datePickerStyle(.graphical)
+                .padding(10)
+                .background(.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 struct ToolReportView: View {
     let report: ToolReport
     let shareText: String
     let primaryActions: [(String, String)]
+    let onPrimaryAction: (String) -> Void
+    @Environment(\.openURL) private var openURL
 
     private var hero: (String, String) {
         report.results.first ?? ("Estimated Result", "Ready")
@@ -1991,7 +2445,10 @@ struct ToolReportView: View {
 
             VStack(spacing: 10) {
                 ForEach(primaryActions, id: \.0) { action in
-                    ToolPrimaryButton(title: action.0, icon: action.1) {}
+                    ToolPrimaryButton(title: action.0, icon: action.1) {
+                        onPrimaryAction(action.0)
+                        emailReviewTeam(actionTitle: action.0)
+                    }
                 }
                 ShareLink(item: shareText) {
                     Label("Share PDF", systemImage: "square.and.arrow.up")
@@ -2012,6 +2469,15 @@ struct ToolReportView: View {
             }
         }
         .cardStyle()
+    }
+
+    private func emailReviewTeam(actionTitle: String) {
+        let subject = "HomeSwipe \(actionTitle)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "HomeSwipe%20Application"
+        let body = shareText.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        guard let url = URL(string: "mailto:homeswipelistings@gmail.com?subject=\(subject)&body=\(body)") else {
+            return
+        }
+        openURL(url)
     }
 }
 
@@ -2152,8 +2618,27 @@ struct MessagesScreen: View {
             VStack(alignment: .leading, spacing: 18) {
                 PageTitle(title: "Messages", subtitle: "Direct communication between landlords and tenants.")
 
-                VStack(spacing: 10) {
-                    ForEach(store.conversations) { conversation in
+                if store.conversations.isEmpty {
+                    EmptyProfilePanel(
+                        icon: "message",
+                        title: "No chats yet",
+                        message: "Use Chat now on any home listing to start a real conversation."
+                    )
+                    Button {
+                        store.activeTab = .home
+                    } label: {
+                        Label("Find homes", systemImage: "house")
+                            .font(.system(size: 14, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(Color.hex("#0f766e"))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    VStack(spacing: 10) {
+                        ForEach(store.conversations) { conversation in
                         Button {
                             store.activeConversationID = conversation.id
                         } label: {
@@ -2193,10 +2678,10 @@ struct MessagesScreen: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
+                        }
                     }
-                }
 
-                if let activeConversation = store.activeConversation {
+                    if let activeConversation = store.activeConversation {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
@@ -2253,6 +2738,13 @@ struct MessagesScreen: View {
                             .stroke(Color.hex("#dbeafe"), lineWidth: 1)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else {
+                        EmptyProfilePanel(
+                            icon: "message",
+                            title: "Open a chat",
+                            message: "Tap any conversation above to view the full message thread."
+                        )
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -2302,7 +2794,7 @@ struct ProfileScreen: View {
                     Spacer()
 
                     Button {
-                        store.activeProfileView = .documents
+                        store.activeProfileView = .personal
                     } label: {
                         Image(systemName: "pencil")
                             .foregroundStyle(Color.hex("#0f172a"))
@@ -2324,7 +2816,25 @@ struct ProfileScreen: View {
                         StatBlock(value: "0", label: "Reviews")
                     }
 
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Profile Information")
+                            .font(.system(size: 18, weight: .heavy))
+                        ProfileFact(title: "Signup", value: store.signUpMethod)
+                        ProfileFact(title: "Email", value: store.account.email.isEmpty ? "Not provided" : store.account.email)
+                        ProfileFact(title: "Role", value: store.verificationRoleLabel)
+                        ProfileFact(title: "Verification", value: store.verificationState.rawValue)
+                        if store.onboardingRole == .tenant {
+                            ProfileFact(title: "City", value: store.tenantOnboarding.city.isEmpty ? "Not provided" : store.tenantOnboarding.city)
+                            ProfileFact(title: "Budget", value: store.tenantOnboarding.budget.isEmpty ? "Not provided" : store.tenantOnboarding.budget)
+                        } else {
+                            ProfileFact(title: "Primary Location", value: store.listerOnboarding.primaryLocation.isEmpty ? "Not provided" : store.listerOnboarding.primaryLocation)
+                            ProfileFact(title: "Properties", value: store.listerOnboarding.propertyCount.isEmpty ? "Not provided" : store.listerOnboarding.propertyCount)
+                        }
+                    }
+                    .cardStyle()
+
                     VStack(spacing: 0) {
+                        ProfileMenuRow(title: "Personal information") { store.activeProfileView = .personal }
                         ProfileMenuRow(title: "Saved homes") { store.activeProfileView = .saved }
                         ProfileMenuRow(title: "Applications") { store.activeProfileView = .applications }
                         ProfileMenuRow(title: "Verification Center") { store.activeProfileView = .documents }
@@ -2338,15 +2848,56 @@ struct ProfileScreen: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
 
+                if store.activeProfileView == .personal {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Your Details")
+                                    .font(.system(size: 18, weight: .heavy))
+                                Text("Only your signed-in Firebase user document stores these profile details.")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.hex("#64748b"))
+                            }
+                            Spacer()
+                            Image(systemName: "lock")
+                                .foregroundStyle(Color.hex("#0f766e"))
+                        }
+
+                        ProfileTextField(label: "Full name", text: $store.account.fullName)
+                        ProfileTextField(label: "Email", text: $store.account.email, keyboard: .emailAddress)
+                        ProfileTextField(label: "Phone", text: $store.account.phone, keyboard: .phonePad)
+                        ProfileTextField(label: "Employer", text: $store.account.employer)
+                        ProfileTextField(label: "Monthly budget", text: $store.account.monthlyBudget, keyboard: .decimalPad)
+
+                        Button {
+                            store.saveProfileDetails()
+                        } label: {
+                            Label("Save profile", systemImage: "square.and.arrow.down")
+                                .font(.system(size: 14, weight: .heavy))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 44)
+                                .background(Color.hex("#0f766e"))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .cardStyle()
+                }
+
                 if store.activeProfileView == .saved {
                     VStack(spacing: 16) {
                         ForEach(store.savedListings) { listing in
-                            ListingCard(
-                                listing: listing,
-                                isSaved: true,
-                                onToggleSaved: { store.toggleSaved(listing) },
-                                onOpen: { store.selectedListing = listing }
-                            )
+                        ListingCard(
+                            listing: listing,
+                            isSaved: true,
+                            onToggleSaved: { store.toggleSaved(listing) },
+                            onChat: { store.startChat(for: listing) },
+                            onOpen: {
+                                store.recordSearchInterest(listing.location)
+                                store.selectedListing = listing
+                            }
+                        )
                         }
                     }
                 }
@@ -2362,17 +2913,29 @@ struct ProfileScreen: View {
                         } else {
                             ForEach(store.applications) { application in
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text(application.property)
-                                        .font(.system(size: 19, weight: .heavy))
-                                    Text(application.landlord)
+                                    HStack {
+                                        Text(application.property)
+                                            .font(.system(size: 19, weight: .heavy))
+                                        Spacer()
+                                        Text(application.status)
+                                            .font(.system(size: 12, weight: .heavy))
+                                            .foregroundStyle(application.status == "Approved" ? Color.hex("#2563eb") : Color.hex("#0f766e"))
+                                            .padding(.horizontal, 10)
+                                            .frame(height: 30)
+                                            .background(Color.hex("#ecfeff"))
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    Text("\(application.landlord) · \(application.submitted)")
                                         .font(.system(size: 14))
                                         .foregroundStyle(Color.hex("#475569"))
-                                    Text(application.status)
-                                        .font(.system(size: 14, weight: .heavy))
-                                        .foregroundStyle(Color.hex("#0f766e"))
                                     Text(application.nextStep)
                                         .font(.system(size: 14))
                                         .foregroundStyle(Color.hex("#64748b"))
+                                    Link(destination: URL(string: "mailto:homeswipelistings@gmail.com?subject=HomeSwipe%20Application%20\(application.id)")!) {
+                                        Label("Email HomeSwipe review team", systemImage: "envelope")
+                                            .font(.system(size: 13, weight: .heavy))
+                                            .foregroundStyle(Color.hex("#0f766e"))
+                                    }
                                 }
                                 .cardStyle()
                             }
@@ -2545,12 +3108,16 @@ struct SearchBar: View {
     @Binding var store: HomeSwipeStore
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
         HStack(spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(Color.hex("#64748b"))
                 TextField("Search suburb, amenity, or listing type", text: $store.searchText)
                     .textFieldStyle(.plain)
+                    .onSubmit {
+                        store.recordSearchInterest(store.searchText)
+                    }
 
                 if !store.searchText.isEmpty {
                     Button {
@@ -2597,6 +3164,54 @@ struct SearchBar: View {
                 }
             }
             .buttonStyle(.plain)
+        }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(store.searchText.isEmpty ? "Search assists" : "Suggestions")
+                        .font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(Color.hex("#0f172a"))
+                    Spacer()
+                    Text("Zimbabwe only")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.hex("#64748b"))
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
+                    ForEach(store.searchSuggestions, id: \.self) { suggestion in
+                        Button {
+                            store.searchText = suggestion
+                            store.recordSearchInterest(suggestion)
+                        } label: {
+                            Label(suggestion, systemImage: "magnifyingglass")
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundStyle(Color.hex("#0f766e"))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 34)
+                                .background(Color.hex("#f0fdfa"))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.hex("#99f6e4"), lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                if !store.savedSearches.isEmpty {
+                    Text("Using your interests: \(store.savedSearches.prefix(3).joined(separator: " · "))")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.hex("#64748b"))
+                }
+            }
+            .padding(12)
+            .background(.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.hex("#dbeafe"), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 }
@@ -2710,10 +3325,12 @@ struct ListingCard: View {
     let listing: Listing
     let isSaved: Bool
     let onToggleSaved: () -> Void
+    let onChat: () -> Void
     let onOpen: () -> Void
 
     var body: some View {
-        Button(action: onOpen) {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 0) {
                 RemoteListingImage(url: listing.imageURL)
                     .frame(height: 220)
@@ -2757,14 +3374,27 @@ struct ListingCard: View {
                 }
                 .padding(14)
             }
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onChat) {
+                Label("Chat now", systemImage: "message")
+                    .font(.system(size: 14, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(Color.hex("#0f766e"))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 14)
+        }
             .background(.white)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(Color.hex("#e2e8f0"), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -3124,6 +3754,33 @@ struct ProfileFact: View {
         .padding(12)
         .background(Color.hex("#f8fafc"))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ProfileTextField: View {
+    let label: String
+    @Binding var text: String
+    var keyboard: UIKeyboardType = .default
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(Color.hex("#64748b"))
+            TextField(label, text: $text)
+                .keyboardType(keyboard)
+                .textInputAutocapitalization(keyboard == .emailAddress ? .never : .words)
+                .autocorrectionDisabled(keyboard == .emailAddress)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 12)
+                .frame(height: 44)
+                .background(Color.hex("#f8fafc"))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hex("#cbd5e1"), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
     }
 }
 
@@ -3529,4 +4186,50 @@ extension Color {
 
 #Preview {
     ContentView()
+}
+
+private struct ToolsPreviewHost: View {
+    @State private var store = HomeSwipeStore()
+
+    var body: some View {
+        ToolsScreen(store: $store)
+    }
+}
+
+private struct ToolsLeasePreviewHost: View {
+    @State private var store = HomeSwipeStore()
+
+    var body: some View {
+        ToolsScreen(store: $store, initialActiveTool: .leases, initialToolStep: 10)
+            .task {
+                store.leaseDraft.property = "Borrowdale Apartment"
+                store.leaseDraft.landlord = "Moyo Properties"
+                store.leaseDraft.tenant = "Rudo M."
+                store.leaseDraft.rent = "850"
+                store.leaseDraft.deposit = "850"
+                store.leaseDraft.startDate = "2026-07-01"
+                store.leaseDraft.endDate = "2027-06-30"
+                store.leaseDraft.utilities = "Water included"
+                store.leaseDraft.petPolicy = "No pets"
+                store.leaseDraft.parking = "Covered parking"
+                store.createLease()
+            }
+    }
+}
+
+#Preview("Tools Tab") {
+    ToolsPreviewHost()
+}
+
+#Preview("Tools Calculator") {
+    ToolsScreen(
+        store: .constant(HomeSwipeStore()),
+        initialActiveTool: .homeLoan,
+        initialToolStep: 0,
+        initialToolInputs: ToolInputs(currency: "USD", income: "1500", loanYears: "10", deposit: "8000")
+    )
+}
+
+#Preview("Tools Lease Flow") {
+    ToolsLeasePreviewHost()
 }
