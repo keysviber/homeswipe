@@ -3,6 +3,7 @@ import {
   Image,
   ImageStyle,
   KeyboardTypeOptions,
+  Linking,
   Platform,
   Pressable,
   SafeAreaView,
@@ -46,6 +47,8 @@ import {
 } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { auth, db, isFirebaseConfigured, storage } from './firebase';
+
+const welcomeHomeImage = require('../assets/welcome-home.jpeg');
 
 type TabKey = 'home' | 'tools' | 'messages' | 'profile';
 type ListingKind = 'rentals' | 'sales' | 'stands';
@@ -137,8 +140,25 @@ type Conversation = {
   person: string;
   role: string;
   listingTitle: string;
+  profile?: PublicProfileSnapshot;
   time: string;
   messages: string[];
+};
+
+type PublicProfileSnapshot = {
+  name: string;
+  role: string;
+  verification: string;
+  location: string;
+  budget?: string;
+  propertyTypes?: string[];
+  amenities?: string[];
+  employmentStatus?: string;
+  householdTypes?: string[];
+  leasePreferences?: string[];
+  primaryLocation?: string;
+  propertyCount?: string;
+  listerType?: string;
 };
 
 type ApplicationStatus = 'Submitted' | 'Viewing booked' | 'Docs requested' | 'In Review' | 'Approved';
@@ -153,7 +173,7 @@ type RentalApplication = {
   nextStep: string;
 };
 
-type ProfileView = 'overview' | 'landlordListings' | 'saved' | 'applications' | 'rating' | 'personal' | 'documents' | 'searches' | 'payments';
+type ProfileView = 'overview' | 'landlordListings' | 'saved' | 'applications' | 'rating' | 'personal' | 'documents' | 'support' | 'payments';
 
 type HomeFilters = {
   minPrice: string;
@@ -182,13 +202,13 @@ type HomeSwipeData = {
   onboardingRole?: OnboardingRole | null;
   tenantOnboarding?: TenantOnboardingInput;
   listerOnboarding?: ListerOnboardingInput;
+  publicProfile?: PublicProfileSnapshot;
   verificationRole?: VerificationRole;
   verificationDocuments?: VerificationDocument[];
   applications: RentalApplication[];
   conversations: Conversation[];
   leases: LeaseDraft[];
   savedListingIds: string[];
-  savedSearches: string[];
 };
 
 type VerificationDocumentStatus = 'Verified' | 'Ready for review' | 'Needs update' | 'Missing';
@@ -668,10 +688,9 @@ const getListingSuggestionParts = (listing: Listing) => {
   ].filter(Boolean) as string[];
 };
 
-const getSearchSuggestions = (query: string, listings: Listing[], savedSearches: string[], activeKind: ListingKind) => {
+const getSearchSuggestions = (query: string, listings: Listing[], activeKind: ListingKind) => {
   const normalizedQuery = normalizeSearchValue(query);
   const candidateParts = [
-    ...savedSearches,
     ...zimbabweSearchTerms,
     ...listings.filter((listing) => listing.kind === activeKind).flatMap(getListingSuggestionParts)
   ];
@@ -692,13 +711,6 @@ const getSearchSuggestions = (query: string, listings: Listing[], savedSearches:
     .sort((first, second) => second.score - first.score || first.part.length - second.part.length)
     .slice(0, 10)
     .map((item) => item.part);
-};
-
-const getListingInterestScore = (listing: Listing, savedSearches: string[]) => {
-  return savedSearches.slice(0, 12).reduce((score, search, index) => {
-    const matchScore = getListingSearchScore(listing, search);
-    return score + (matchScore > 0 ? Math.max(1, 12 - index) + matchScore : 0);
-  }, 0);
 };
 
 const getUserDisplayName = (user: User | null) => {
@@ -776,6 +788,105 @@ const formatMoney = (currency: string, value: number) => {
 };
 
 const formatPercent = (value: number) => `${value.toFixed(1)}%`;
+
+const getEstimatedMonthlyIncomeFromBudget = (budget: string) => {
+  if (budget === 'Under $200') return 600;
+  if (budget === '$200-$500') return 1200;
+  if (budget === '$500-$1000') return 2500;
+  if (budget === '$1000+') return 4000;
+  return 0;
+};
+
+const getListingHomeLoanReport = (listing: Listing, userName: string, userEmail: string, monthlyIncome: number, depositText = ''): ReportPayload => {
+  const currency = 'USD';
+  const listingPrice = getNumberFromText(listing.price);
+  const years = 10;
+  const deposit = getNumberFromText(depositText);
+  const maxMonthly = monthlyIncome * 0.3;
+  const months = years * 12;
+  const loanAmount = monthlyRate > 0 ? maxMonthly * ((1 - Math.pow(1 + monthlyRate, -months)) / monthlyRate) : maxMonthly * months;
+  const requiredDeposit = Math.max(deposit, loanAmount * 0.1, listingPrice * 0.1);
+  const purchasePrice = loanAmount + requiredDeposit;
+  const transferCosts = listingPrice * 0.035;
+  const registrationCosts = loanAmount * 0.025;
+  const valuationFees = Math.max(150, listingPrice * 0.002);
+  const applicationFees = Math.max(100, loanAmount * 0.0015);
+  return {
+    title: 'Home Loan Affordability',
+    userName,
+    userEmail,
+    inputs: {
+      Property: listing.title,
+      Location: listing.location,
+      'Listing Price': formatMoney(currency, listingPrice),
+      'Monthly Net Income': formatMoney(currency, monthlyIncome),
+      'Loan Period': `${years} years`,
+      'Deposit Available': formatMoney(currency, deposit)
+    },
+    results: {
+      'Estimated Purchase Price': formatMoney(currency, purchasePrice),
+      'Listing Price': formatMoney(currency, listingPrice),
+      'Required Deposit': formatMoney(currency, requiredDeposit),
+      'Estimated Loan Amount': formatMoney(currency, loanAmount),
+      'Monthly Repayment': formatMoney(currency, maxMonthly),
+      'Estimated Upfront Costs': formatMoney(currency, transferCosts + registrationCosts + valuationFees + applicationFees)
+    }
+  };
+};
+
+const getListingUpgradeReport = (listing: Listing, userName: string, userEmail: string, budgetText: string): ReportPayload => {
+  const currency = 'USD';
+  const budget = getNumberFromText(budgetText);
+  const total = budget + budget * interestRate * 3;
+  return {
+    title: 'Property Upgrades',
+    userName,
+    userEmail,
+    inputs: {
+      Property: listing.title,
+      'Property Location': listing.location,
+      'Estimated Budget': formatMoney(currency, budget)
+    },
+    results: {
+      'Estimated Project Cost': formatMoney(currency, budget),
+      'Estimated Monthly Repayment': formatMoney(currency, total / 36),
+      'Finance Amount': formatMoney(currency, budget),
+      'Interest Rate': formatPercent(12.5),
+      'Project Timeline': budget > 20000 ? '8-16 weeks' : '3-8 weeks'
+    },
+    notes: ['HomeSwipe controls the project, suppliers, contractors, payments, inspections and completion process.', 'Funds are paid directly to approved suppliers and contractors, not to the customer.']
+  };
+};
+
+const getListingInsuranceReport = (listing: Listing, userName: string, userEmail: string, monthsText: string): ReportPayload => {
+  const currency = 'USD';
+  const sumInsured = getNumberFromText(listing.price);
+  const ratePercent = 0.12;
+  const months = Math.max(4, getNumberFromText(monthsText) || 12);
+  const premium = sumInsured * (ratePercent / 100) * (months / 12);
+  const stampDuty = premium * 0.05;
+  return {
+    title: 'Home, Household and Specified Items Insurance',
+    userName,
+    userEmail,
+    inputs: {
+      Property: listing.title,
+      Location: listing.location,
+      'Item Insured': 'Buildings',
+      'Sum Insured': formatMoney(currency, sumInsured),
+      'Insurance Rate': `${ratePercent}%`,
+      'Period of Cover': `${months} months`
+    },
+    results: {
+      Item: 'Buildings',
+      'Sum Insured': formatMoney(currency, sumInsured),
+      Premium: formatMoney(currency, premium),
+      'Stamp Duty': formatMoney(currency, stampDuty),
+      'Total Due': formatMoney(currency, premium + stampDuty)
+    },
+    notes: ['Insurance premium uses the selected rate and period of cover. Stamp duty is calculated at 5% of the premium.']
+  };
+};
 
 const sanitizePdfText = (value: string) => value.replace(/[()\\]/g, (character) => `\\${character}`).replace(/[^\x20-\x7E]/g, '-');
 
@@ -1046,7 +1157,6 @@ export default function App() {
   const [applications, setApplications] = useState<RentalApplication[]>(initialApplications);
   const [leases, setLeases] = useState<LeaseDraft[]>(initialLeases);
   const [savedToolReports, setSavedToolReports] = useState<SavedToolReport[]>([]);
-  const [savedSearches, setSavedSearches] = useState<string[]>([]);
   const [firebaseStatus, setFirebaseStatus] = useState<FirebaseStatus>(isFirebaseConfigured ? 'Connecting' : 'Not configured');
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authPrompt, setAuthPrompt] = useState<AuthPrompt | null>(null);
@@ -1069,6 +1179,21 @@ export default function App() {
   const isListerOnboardingComplete = Boolean(listerOnboarding.listerType && listerOnboarding.primaryLocation && listerOnboarding.propertyCount);
   const onboardingFinalStep = onboardingRole === 'tenant' ? 10 : 6;
   const onboardingVerificationStep = onboardingRole === 'tenant' ? 9 : 5;
+  const publicProfile: PublicProfileSnapshot = {
+    name: currentLandlordProfile.displayName,
+    role: verificationRoleLabel,
+    verification: verificationDocuments.every((document) => document.status === 'Verified') ? 'Verified' : 'Not Verified',
+    location: onboardingRole === 'tenant' ? tenantOnboarding.city : listerOnboarding.primaryLocation,
+    budget: tenantOnboarding.budget,
+    propertyTypes: tenantOnboarding.propertyTypes,
+    amenities: tenantOnboarding.amenities,
+    employmentStatus: tenantOnboarding.employmentStatus,
+    householdTypes: tenantOnboarding.householdTypes,
+    leasePreferences: tenantOnboarding.leasePreferences,
+    primaryLocation: listerOnboarding.primaryLocation,
+    propertyCount: listerOnboarding.propertyCount,
+    listerType: listerOnboarding.listerType
+  };
 
   const applySignedInProfile = (user: User) => {
     setFirebaseUser(user);
@@ -1146,7 +1271,7 @@ export default function App() {
     if (onboardingRole === 'tenant') {
       setActiveTab('home');
       setActiveKind('rentals');
-      setQuery(tenantOnboarding.city);
+      setQuery('');
       setHomeFilters((current) => ({
         ...current,
         amenity: tenantOnboarding.amenities[0] || ''
@@ -1292,18 +1417,10 @@ export default function App() {
           return second.searchScore - first.searchScore;
         }
 
-        if (!normalizedQuery && savedSearches.length > 0) {
-          const secondInterestScore = getListingInterestScore(second.listing, savedSearches);
-          const firstInterestScore = getListingInterestScore(first.listing, savedSearches);
-          if (secondInterestScore !== firstInterestScore) {
-            return secondInterestScore - firstInterestScore;
-          }
-        }
-
         return first.index - second.index;
       })
       .map(({ listing }) => listing);
-  }, [activeKind, availableListings, homeFilters, query, savedListingIds, savedSearches]);
+  }, [activeKind, availableListings, homeFilters, query, savedListingIds]);
 
   const savedListings = useMemo(() => {
     const knownListings = uniqueListings([...availableListings, ...optimisticListings, ...landlordListings, ...initialListings]);
@@ -1472,7 +1589,6 @@ export default function App() {
           setConversations(removeDemoConversations(data.conversations || initialConversations));
           setApplications(removeDemoApplications(data.applications || initialApplications));
           setLeases(removeDemoLeases(data.leases || initialLeases));
-          setSavedSearches(data.savedSearches || []);
         } else {
           const completeSave = beginFirebaseSave();
           setDoc(doc(firestore, 'homeswipeUsers', userDataDocId), {
@@ -1481,13 +1597,13 @@ export default function App() {
             onboardingRole,
             tenantOnboarding,
             listerOnboarding,
+            publicProfile,
             verificationRole,
             verificationDocuments,
             applications,
             conversations,
             leases,
-            savedListingIds,
-            savedSearches
+            savedListingIds
           })
             .then(() => completeSave('Synced'))
             .catch(() => completeSave('Offline'));
@@ -1588,16 +1704,6 @@ export default function App() {
   }, [activeKind]);
 
   useEffect(() => {
-    const trimmedQuery = query.trim();
-    if (!isSignedIn || trimmedQuery.length < 2) {
-      return;
-    }
-
-    const timer = setTimeout(() => recordSearchInterest(trimmedQuery), 900);
-    return () => clearTimeout(timer);
-  }, [isSignedIn, query]);
-
-  useEffect(() => {
     const activeLandlordListings = uniqueListings([...optimisticListings, ...landlordListings]).filter((listing) => listing.kind === activeKind);
     if (activeLandlordListings.length === 0) {
       return;
@@ -1628,17 +1734,17 @@ export default function App() {
         onboardingRole,
         tenantOnboarding,
         listerOnboarding,
+        publicProfile,
         verificationRole,
         verificationDocuments,
         leases,
-        savedListingIds,
-        savedSearches
+        savedListingIds
       },
       { merge: true }
     )
       .then(() => completeSave('Synced'))
       .catch(() => completeSave('Offline'));
-  }, [accountProfile.email, accountProfile.employer, accountProfile.fullName, accountProfile.monthlyBudget, accountProfile.phone, applications, conversations, leases, isFirebaseUserReady, listerOnboarding, onboardingRole, savedListingIds, savedSearches, signUpMethod, tenantOnboarding, userDataDocId, verificationDocuments, verificationRole]);
+  }, [accountProfile.email, accountProfile.employer, accountProfile.fullName, accountProfile.monthlyBudget, accountProfile.phone, applications, conversations, leases, isFirebaseUserReady, listerOnboarding, onboardingRole, savedListingIds, signUpMethod, tenantOnboarding, userDataDocId, verificationDocuments, verificationRole]);
 
   const addListing = async () => {
     if (!requireAuth('Sign up to publish your listing and manage enquiries from tenants or buyers.')) {
@@ -1939,6 +2045,15 @@ export default function App() {
           person: listing.host,
           role: listing.kind === 'sales' || listing.kind === 'stands' ? 'Agent' : 'Landlord',
           listingTitle: listing.title,
+          profile: {
+            name: listing.host,
+            role: listing.kind === 'sales' || listing.kind === 'stands' ? 'Agent' : 'Landlord',
+            verification: listing.tag === 'Verified landlord' ? 'Verified' : 'Listed on HomeSwipe',
+            location: listing.location,
+            primaryLocation: listing.location,
+            propertyCount: '1+',
+            listerType: listing.kind === 'sales' || listing.kind === 'stands' ? 'Real Estate Agent' : 'Landlord / Property Owner'
+          },
           time: 'Now',
           messages: [openingMessage || `Hi, I am interested in ${listing.title}. Is it still available?`]
         },
@@ -1981,6 +2096,45 @@ export default function App() {
     });
   };
 
+  const submitListingToolApplication = (label: string, payload: ReportPayload) => {
+    if (!requireAuth('Sign in to apply and track your HomeSwipe application review.')) {
+      return;
+    }
+
+    const summary = Object.entries(payload.results)
+      .slice(0, 3)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(' · ');
+    const application: RentalApplication = {
+      id: `listing-tool-${Date.now()}`,
+      listingId: `tool-${payload.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+      property: label,
+      landlord: 'HomeSwipe Finance',
+      status: 'In Review',
+      submitted: new Date().toLocaleDateString(),
+      nextStep: `${summary}. Sent for HomeSwipe review at homeswipelistings@gmail.com.`
+    };
+    setApplications((currentApplications) => [application, ...currentApplications]);
+    setActiveTab('profile');
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const body = [
+        `Application: ${label}`,
+        `User: ${currentLandlordProfile.displayName}`,
+        currentLandlordProfile.email ? `Email: ${currentLandlordProfile.email}` : '',
+        '',
+        'Inputs',
+        ...Object.entries(payload.inputs).map(([key, value]) => `${key}: ${value}`),
+        '',
+        'Results',
+        ...Object.entries(payload.results).map(([key, value]) => `${key}: ${value}`),
+        '',
+        `Application ID: ${application.id}`
+      ].filter(Boolean).join('\n');
+      window.location.href = `mailto:homeswipelistings@gmail.com?subject=${encodeURIComponent(`HomeSwipe ${label}`)}&body=${encodeURIComponent(body)}`;
+    }
+  };
+
   const sendMessage = (conversationId: string, message: string) => {
     if (!requireAuth('Sign in to reply to your HomeSwipe messages.')) {
       return;
@@ -2006,45 +2160,6 @@ export default function App() {
     setSelectedListing(listing);
     setActiveKind(listing.kind);
     setActiveTab('home');
-  };
-
-  const saveCurrentSearch = (search: string) => {
-    if (!requireAuth('Sign up to save searches and get back to them later.')) {
-      return;
-    }
-
-    const trimmedSearch = search.trim();
-    if (!trimmedSearch) {
-      return;
-    }
-
-    setSavedSearches((currentSearches) =>
-      currentSearches.includes(trimmedSearch) ? currentSearches : [trimmedSearch, ...currentSearches]
-    );
-  };
-
-  const recordSearchInterest = (search: string) => {
-    if (!isSignedIn) {
-      return;
-    }
-
-    const trimmedSearch = search.trim();
-    if (trimmedSearch.length < 2) {
-      return;
-    }
-
-    setSavedSearches((currentSearches) => {
-      const withoutDuplicate = currentSearches.filter((savedSearch) => normalizeSearchValue(savedSearch) !== normalizeSearchValue(trimmedSearch));
-      return [trimmedSearch, ...withoutDuplicate].slice(0, 30);
-    });
-  };
-
-  const removeSavedSearch = (search: string) => {
-    if (!requireAuth('Sign in to manage your saved searches.')) {
-      return;
-    }
-
-    setSavedSearches((currentSearches) => currentSearches.filter((savedSearch) => savedSearch !== search));
   };
 
   const closeAuthPrompt = () => setAuthPrompt(null);
@@ -2079,7 +2194,10 @@ export default function App() {
             listingStep={listingStep}
             selectedListing={selectedListing}
             savedListingIds={savedListingIds}
-            savedSearches={savedSearches}
+            currentUserEmail={currentLandlordProfile.email || ''}
+            currentUserName={currentLandlordProfile.displayName}
+            monthlyIncomeEstimate={getEstimatedMonthlyIncomeFromBudget(tenantOnboarding.budget)}
+            onboardingRole={onboardingRole}
             onMessageListing={openListingConversation}
             onPickListingImages={pickListingImages}
             onRequestViewing={requestViewing}
@@ -2087,8 +2205,8 @@ export default function App() {
             onLoadMoreListings={() => loadListingsPage('more')}
             onRequireAuth={requireAuth}
             onShareListing={shareListing}
-            onRecordSearchInterest={recordSearchInterest}
             onToggleSavedListing={toggleSavedListing}
+            onSubmitListingToolApplication={submitListingToolApplication}
             setActiveKind={setActiveKind}
             setHomeFilters={setHomeFilters}
             setListingForm={setListingForm}
@@ -2127,7 +2245,6 @@ export default function App() {
             applications={applications}
             listings={availableListings}
             landlordListings={landlordListings}
-            currentSearch={query}
             currentUserEmail={currentLandlordProfile.email || ''}
             currentUserName={currentLandlordProfile.displayName}
             accountProfile={accountProfile}
@@ -2137,17 +2254,15 @@ export default function App() {
             onboardingRole={onboardingRole}
             savedToolReports={savedToolReports}
             savedListings={savedListings}
-            savedSearches={savedSearches}
             signUpMethod={signUpMethod}
             tenantOnboarding={tenantOnboarding}
             verificationRole={verificationRole}
             onMessageListing={openListingConversation}
             onAddListing={openAddListingForm}
             onOpenListing={openListingFromProfile}
-            onRemoveSavedSearch={removeSavedSearch}
-            onSaveCurrentSearch={saveCurrentSearch}
             onToggleSavedListing={toggleSavedListing}
             onDeleteListing={deleteListing}
+            onSubmitListingToolApplication={submitListingToolApplication}
             onRequireAuth={requireAuth}
             onSetVerificationRole={setVerificationRole}
             onUploadVerificationDocument={uploadVerificationDocument}
@@ -2320,8 +2435,8 @@ function OnboardingScreen({
       <View style={styles.onboardingCard}>
         {[
           `Only required documents for ${verificationRoleLabel}`,
-          'Profile becomes verified after all uploads',
-          'You can finish or update uploads from Profile'
+          'Verification is optional during onboarding',
+          'Finish or update uploads from Profile'
         ].map((item) => (
           <View key={item} style={styles.checkRow}>
             <Ionicons name="checkmark-circle" size={18} color="#0f766e" />
@@ -2351,12 +2466,12 @@ function OnboardingScreen({
         ))}
       </View>
       <View style={styles.formNavRow}>
-        <Pressable style={[styles.primaryButton, !hasUploadedAllVerificationDocuments && styles.disabledButton]} disabled={!hasUploadedAllVerificationDocuments} onPress={onAdvance}>
+        <Pressable style={styles.primaryButton} onPress={onAdvance}>
           <Ionicons name="checkmark-circle-outline" size={18} color="#ffffff" />
-          <Text style={styles.primaryButtonText}>Continue Verified</Text>
+          <Text style={styles.primaryButtonText}>{hasUploadedAllVerificationDocuments ? 'Continue Verified' : 'Finish Without Verification'}</Text>
         </Pressable>
         <Pressable style={styles.secondaryButton} onPress={onSkipVerification}>
-          <Text style={styles.secondaryButtonText}>Skip For Now</Text>
+          <Text style={styles.secondaryButtonText}>Open Verification Later In Profile</Text>
         </Pressable>
       </View>
     </>
@@ -2394,10 +2509,7 @@ function OnboardingScreen({
   if (onboardingStep === 0) {
     wizardContent = (
       <>
-        <View>
-          <Text style={styles.pageTitle}>Welcome to HomeSwipe</Text>
-          <Text style={styles.subtitle}>Sign up to save your profile, verification uploads, applications, tools, and listings.</Text>
-        </View>
+        <WelcomeHero />
         <View style={styles.onboardingCard}>
           {renderSignupButton('Google', 'logo-google', 'Sign up with Google')}
           {renderSignupButton('Apple', 'logo-apple', 'Sign up with Apple')}
@@ -2447,7 +2559,7 @@ function OnboardingScreen({
     } else if (onboardingStep === 8) {
       wizardContent = <>{renderMultiChoice('Lease Preference', onboardingLeasePreferences, tenantOnboarding.leasePreferences, (value) => toggleTenantArray('leasePreferences', value))}{renderContinue(tenantOnboarding.leasePreferences.length > 0)}</>;
     } else if (onboardingStep === 9) {
-      wizardContent = renderVerificationStep('Get Verified', 'Upload the required tenant documents to unlock your verified profile badge.');
+      wizardContent = renderVerificationStep('Verification Optional', 'Upload tenant documents now or finish them later from your Profile tab.');
     } else {
       wizardContent = (
         <View style={styles.onboardingReady}>
@@ -2465,7 +2577,7 @@ function OnboardingScreen({
   } else if (onboardingStep === 4) {
     wizardContent = <>{renderSingleChoice('Number of Properties', onboardingPropertyCounts, listerOnboarding.propertyCount, (propertyCount) => onSetListerOnboarding((current) => ({ ...current, propertyCount })))}{renderContinue(Boolean(listerOnboarding.propertyCount))}</>;
   } else if (onboardingStep === 5) {
-    wizardContent = renderVerificationStep(`Become a Verified ${verificationRoleLabel}`, `Upload only the documents required for ${verificationRoleLabel}.`);
+    wizardContent = renderVerificationStep('Verification Optional', `Upload only the documents required for ${verificationRoleLabel}, or finish later from Profile.`);
   } else {
     wizardContent = (
       <View style={styles.onboardingReady}>
@@ -2617,6 +2729,22 @@ function OnboardingScreen({
       </View>
       {content}
     </ScrollView>
+  );
+}
+
+function WelcomeHero() {
+  return (
+    <View style={styles.welcomeHero}>
+      <Image source={welcomeHomeImage} style={styles.welcomeHeroImage} />
+      <View style={styles.welcomeHeroOverlay} />
+      <View style={styles.welcomeHeroCopy}>
+        <View style={styles.welcomeBrandRow}>
+          <Ionicons name="home" size={20} color="#ffffff" />
+          <Text style={styles.welcomeBrandText}>HomeSwipe</Text>
+        </View>
+        <Text style={styles.welcomeHeroTitle}>Discover Your Dream Home</Text>
+      </View>
+    </View>
   );
 }
 
@@ -2795,8 +2923,11 @@ function HomeScreen({
   addListing,
   listingStep,
   selectedListing,
+  currentUserEmail,
+  currentUserName,
+  monthlyIncomeEstimate,
+  onboardingRole,
   savedListingIds,
-  savedSearches,
   onMessageListing,
   onPickListingImages,
   onRequestViewing,
@@ -2804,8 +2935,8 @@ function HomeScreen({
   onLoadMoreListings,
   onRequireAuth,
   onShareListing,
-  onRecordSearchInterest,
   onToggleSavedListing,
+  onSubmitListingToolApplication,
   setActiveKind,
   setHomeFilters,
   setListingForm,
@@ -2832,8 +2963,11 @@ function HomeScreen({
   addListing: () => void | Promise<void>;
   listingStep: number;
   selectedListing: Listing | null;
+  currentUserEmail: string;
+  currentUserName: string;
+  monthlyIncomeEstimate: number;
+  onboardingRole: OnboardingRole | null;
   savedListingIds: string[];
-  savedSearches: string[];
   onMessageListing: (listing: Listing) => void;
   onPickListingImages: () => void;
   onRequestViewing: (listing: Listing, date: string, time: string) => void;
@@ -2841,8 +2975,8 @@ function HomeScreen({
   onLoadMoreListings: () => void;
   onRequireAuth: (reason: string) => boolean;
   onShareListing: (listing: Listing) => void;
-  onRecordSearchInterest: (search: string) => void;
   onToggleSavedListing: (listingId: string) => void;
+  onSubmitListingToolApplication: (label: string, payload: ReportPayload) => void;
   setActiveKind: (kind: ListingKind) => void;
   setHomeFilters: React.Dispatch<React.SetStateAction<HomeFilters>>;
   setListingForm: React.Dispatch<React.SetStateAction<ListingForm>>;
@@ -2863,6 +2997,11 @@ function HomeScreen({
         onRequestViewing={(date, time) => onRequestViewing(selectedListing, date, time)}
         onRequireAuth={onRequireAuth}
         onShare={() => onShareListing(selectedListing)}
+        currentUserEmail={currentUserEmail}
+        currentUserName={currentUserName}
+        monthlyIncomeEstimate={monthlyIncomeEstimate}
+        onboardingRole={onboardingRole}
+        onSubmitListingToolApplication={onSubmitListingToolApplication}
         onToggleSaved={() => onToggleSavedListing(selectedListing.id)}
       />
     );
@@ -2882,7 +3021,6 @@ function HomeScreen({
   const activeListingStep = listingSteps[Math.min(listingStep, listingSteps.length - 1)];
   const derivedListingSummary = getListingFormSummary(listingForm);
   const trimmedQuery = query.trim();
-  const searchSuggestions = getSearchSuggestions(query, availableListings, savedSearches, activeKind);
 
   return (
     <ScrollView
@@ -2896,21 +3034,23 @@ function HomeScreen({
           <Text style={styles.brand}>HomeSwipe</Text>
           <Text style={styles.subtitle}>Find rentals, homes, and stands without the runaround.</Text>
         </View>
-        <Pressable
-          style={styles.addHomeButton}
-          accessibilityLabel="Add a house listing"
-          onPress={() => {
-            if (!onRequireAuth('Sign up to add a home, stand, or rental listing.')) {
-              return;
-            }
+        {onboardingRole !== 'tenant' && (
+          <Pressable
+            style={styles.addHomeButton}
+            accessibilityLabel="Add a house listing"
+            onPress={() => {
+              if (!onRequireAuth('Sign up to add a home, stand, or rental listing.')) {
+                return;
+              }
 
-            setListingPublishError('');
-            setShowListingForm(!showListingForm);
-          }}
-        >
-          <Ionicons name={showListingForm ? 'close-outline' : 'add-outline'} size={22} color="#ffffff" />
-          <Text style={styles.addHomeText}>{showListingForm ? 'Close' : 'Add home'}</Text>
-        </Pressable>
+              setListingPublishError('');
+              setShowListingForm(!showListingForm);
+            }}
+          >
+            <Ionicons name={showListingForm ? 'close-outline' : 'add-outline'} size={22} color="#ffffff" />
+            <Text style={styles.addHomeText}>{showListingForm ? 'Close' : 'Add home'}</Text>
+          </Pressable>
+        )}
       </View>
 
       {showListingForm && (
@@ -3274,7 +3414,6 @@ function HomeScreen({
           returnKeyType="search"
           value={query}
           onChangeText={setQuery}
-          onSubmitEditing={() => onRecordSearchInterest(query)}
           style={styles.searchInput}
         />
         {query.length > 0 && (
@@ -3290,35 +3429,6 @@ function HomeScreen({
             </View>
           )}
         </Pressable>
-      </View>
-
-      <View style={styles.searchAssistPanel}>
-        <View style={styles.searchAssistHeader}>
-          <Text style={styles.searchAssistTitle}>{trimmedQuery ? 'Suggestions' : 'Search assists'}</Text>
-          <Text style={styles.searchAssistHint}>Zimbabwe only</Text>
-        </View>
-        <View style={styles.quickSearchRail}>
-        {searchSuggestions.map((search) => {
-          const selected = normalizeSearchValue(query) === normalizeSearchValue(search);
-          return (
-            <Pressable
-              key={search}
-              style={[styles.quickSearchChip, selected && styles.quickSearchChipActive]}
-              onPress={() => {
-                setQuery(search);
-                onRecordSearchInterest(search);
-                setShowHomeFilters(false);
-              }}
-            >
-              <Ionicons name="search-outline" size={15} color={selected ? '#ffffff' : '#0f766e'} />
-              <Text style={[styles.quickSearchText, selected && styles.quickSearchTextActive]}>{search}</Text>
-            </Pressable>
-          );
-        })}
-        </View>
-        {savedSearches.length > 0 && (
-          <Text style={styles.searchAssistHint}>Using your interests: {savedSearches.slice(0, 3).join(' · ')}</Text>
-        )}
       </View>
 
       {showHomeFilters && (
@@ -3416,7 +3526,6 @@ function HomeScreen({
             matchSummary={getListingMatchSummary(listing, query)}
             onChat={() => onMessageListing(listing)}
             onPress={() => {
-              onRecordSearchInterest(listing.location);
               setSelectedListing(listing);
             }}
             onShare={() => onShareListing(listing)}
@@ -3490,9 +3599,9 @@ function ListingCard({
           </View>
         </View>
         <Pressable onPress={onPress}>
-          <Text style={styles.listingTitle}>{listing.title}</Text>
-          <Text style={styles.listingLocation}>{listing.location}</Text>
-          <Text style={styles.listingMeta}>{listing.meta}</Text>
+          <Text style={styles.listingTitle} numberOfLines={2}>{listing.title}</Text>
+          <Text style={styles.listingLocation} numberOfLines={1}>{listing.location}</Text>
+          <Text style={styles.listingMeta} numberOfLines={1}>{listing.meta}</Text>
           {matchSummary ? (
             <View style={styles.matchPill}>
               <Ionicons name="sparkles-outline" size={14} color="#0f766e" />
@@ -3500,8 +3609,8 @@ function ListingCard({
             </View>
           ) : null}
           <View style={styles.cardFooter}>
-            <Text style={styles.listingPrice}>{listing.price}</Text>
-            <Text style={styles.hostName}>{listing.host}</Text>
+            <Text style={styles.listingPrice} numberOfLines={1}>{listing.price}</Text>
+            <Text style={styles.hostName} numberOfLines={1}>{listing.host}</Text>
           </View>
         </Pressable>
         {onChat ? (
@@ -3562,33 +3671,68 @@ function ImageDropZone({
 }
 
 function ListingDetails({
+  currentUserEmail,
+  currentUserName,
   isSaved,
   listing,
+  monthlyIncomeEstimate,
   onBack,
   onMessage,
   onRequestViewing,
   onRequireAuth,
   onShare,
+  onboardingRole,
+  onSubmitListingToolApplication,
   onToggleSaved
 }: {
+  currentUserEmail: string;
+  currentUserName: string;
   isSaved: boolean;
   listing: Listing;
+  monthlyIncomeEstimate: number;
   onBack: () => void;
   onMessage: () => void;
   onRequestViewing: (date: string, time: string) => void;
   onRequireAuth: (reason: string) => boolean;
   onShare: () => void;
+  onboardingRole: OnboardingRole | null;
+  onSubmitListingToolApplication: (label: string, payload: ReportPayload) => void;
   onToggleSaved: () => void;
 }) {
   const galleryPhotos = listing.photos.length > 0 ? listing.photos : [listing.image];
   const [showCalendar, setShowCalendar] = useState(false);
+  const [showListingFinance, setShowListingFinance] = useState(false);
   const [selectedDate, setSelectedDate] = useState('Tomorrow');
   const [selectedTime, setSelectedTime] = useState('10:00 AM');
   const viewingDates = ['Tomorrow', 'Friday', 'Saturday', 'Sunday'];
   const viewingTimes = ['10:00 AM', '12:30 PM', '3:00 PM', '5:30 PM'];
+  const canCheckAffordability = listing.kind === 'sales' || listing.kind === 'stands';
+
+  if (showListingFinance && canCheckAffordability) {
+    return (
+      <ScrollView contentContainerStyle={[styles.screenContent, styles.detailScreenContent]} showsVerticalScrollIndicator={false}>
+        <Pressable style={styles.profileBackButton} onPress={() => setShowListingFinance(false)}>
+          <Ionicons name="chevron-back-outline" size={20} color="#0f766e" />
+          <Text style={styles.secondaryButtonText}>Property</Text>
+        </Pressable>
+        <View style={styles.detailSection}>
+          <Text style={styles.detailTitle}>Check Affordability</Text>
+          <Text style={styles.detailLocation}>{listing.title}</Text>
+        </View>
+        <ListingFinancePanel
+          currentUserEmail={currentUserEmail}
+          currentUserName={currentUserName}
+          listing={listing}
+          monthlyIncomeEstimate={monthlyIncomeEstimate}
+          onboardingRole={onboardingRole}
+          onSubmitListingToolApplication={onSubmitListingToolApplication}
+        />
+      </ScrollView>
+    );
+  }
 
   return (
-    <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={[styles.screenContent, styles.detailScreenContent]} showsVerticalScrollIndicator={false}>
       <View style={styles.detailHeader}>
         <Pressable style={styles.detailBackButton} onPress={onBack} accessibilityLabel="Back to listings">
           <Ionicons name="chevron-back-outline" size={22} color="#0f172a" />
@@ -3614,11 +3758,18 @@ function ListingDetails({
 
       <View style={styles.detailTitleRow}>
         <View style={styles.detailTitleCopy}>
-          <Text style={styles.detailTitle}>{listing.title}</Text>
-          <Text style={styles.detailLocation}>{listing.location}</Text>
+          <Text style={styles.detailTitle} numberOfLines={3}>{listing.title}</Text>
+          <Text style={styles.detailLocation} numberOfLines={3}>{listing.location}</Text>
         </View>
-        <Text style={styles.detailPrice}>{listing.price}</Text>
+        <Text style={styles.detailPrice} numberOfLines={2}>{listing.price}</Text>
       </View>
+
+      {canCheckAffordability && (
+        <Pressable style={styles.primaryButton} onPress={() => setShowListingFinance(true)}>
+          <Ionicons name="calculator-outline" size={18} color="#ffffff" />
+          <Text style={styles.primaryButtonText}>Check Affordability</Text>
+        </Pressable>
+      )}
 
       <View style={styles.detailFactGrid}>
         {listing.details.map((detail) => (
@@ -3657,12 +3808,12 @@ function ListingDetails({
       </View>
 
       <View style={styles.detailActionBar}>
-        <Pressable style={styles.secondaryButton} onPress={onMessage}>
+        <Pressable style={[styles.secondaryButton, styles.detailActionBarButton]} onPress={onMessage}>
           <Ionicons name="chatbubble-outline" size={18} color="#0f766e" />
           <Text style={styles.secondaryButtonText}>Chat now</Text>
         </Pressable>
         <Pressable
-          style={styles.primaryButton}
+          style={[styles.primaryButton, styles.detailActionBarButton]}
           onPress={() => {
             if (!showCalendar && !onRequireAuth('Sign up to request viewings and send booking details to the landlord or agent.')) {
               return;
@@ -3708,6 +3859,115 @@ function ListingDetails({
         </View>
       )}
     </ScrollView>
+  );
+}
+
+function ListingFinancePanel({
+  currentUserEmail,
+  currentUserName,
+  listing,
+  monthlyIncomeEstimate,
+  onboardingRole,
+  onSubmitListingToolApplication
+}: {
+  currentUserEmail: string;
+  currentUserName: string;
+  listing: Listing;
+  monthlyIncomeEstimate: number;
+  onboardingRole: OnboardingRole | null;
+  onSubmitListingToolApplication: (label: string, payload: ReportPayload) => void;
+}) {
+  const availableModes = onboardingRole === 'lister'
+    ? ['upgrade', 'insurance']
+    : listing.kind === 'sales' || listing.kind === 'stands'
+      ? ['affordability']
+      : [];
+  const [activeMode, setActiveMode] = useState(availableModes[0] || 'affordability');
+  const [deposit, setDeposit] = useState('');
+  const [upgradeBudget, setUpgradeBudget] = useState(`${Math.max(1000, Math.round(getNumberFromText(listing.price) * 0.12))}`);
+  const [insuranceMonths, setInsuranceMonths] = useState('12');
+
+  useEffect(() => {
+    if (availableModes.length > 0 && !availableModes.includes(activeMode)) {
+      setActiveMode(availableModes[0]);
+    }
+  }, [activeMode, availableModes.join('|')]);
+
+  if (availableModes.length === 0) {
+    return null;
+  }
+
+  const homeLoanReport = getListingHomeLoanReport(listing, currentUserName, currentUserEmail, monthlyIncomeEstimate, deposit);
+  const upgradeReport = getListingUpgradeReport(listing, currentUserName, currentUserEmail, upgradeBudget);
+  const insuranceReport = getListingInsuranceReport(listing, currentUserName, currentUserEmail, insuranceMonths);
+  const activeReport = activeMode === 'upgrade' ? upgradeReport : activeMode === 'insurance' ? insuranceReport : homeLoanReport;
+
+  const modeMeta: Record<string, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
+    affordability: { label: 'Affordability', icon: 'home-outline' },
+    upgrade: { label: 'Upgrade', icon: 'construct-outline' },
+    insurance: { label: 'Insurance', icon: 'shield-checkmark-outline' }
+  };
+
+  return (
+    <View style={styles.formPanel}>
+      <View style={styles.panelHeader}>
+        <View>
+          <Text style={styles.formTitle}>Listing finance</Text>
+          <Text style={styles.panelHint}>Prefilled from this listing price and location.</Text>
+        </View>
+        <Ionicons name="cash-outline" size={26} color="#0f766e" />
+      </View>
+
+      {availableModes.length > 1 && (
+        <View style={styles.segmentedControl}>
+          {availableModes.map((mode) => (
+            <Pressable key={mode} style={[styles.segmentButton, activeMode === mode && styles.segmentButtonActive]} onPress={() => setActiveMode(mode)}>
+              <Ionicons name={modeMeta[mode].icon} size={16} color={activeMode === mode ? '#ffffff' : '#0f766e'} />
+              <Text style={[styles.segmentText, activeMode === mode && styles.segmentTextActive]}>{modeMeta[mode].label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {activeMode === 'affordability' && (
+        <ToolValueInput label="Deposit available" value={deposit} onChangeText={setDeposit} prefix="USD" keyboardType="decimal-pad" />
+      )}
+      {activeMode === 'upgrade' && (
+        <ToolValueInput label="Upgrade budget" value={upgradeBudget} onChangeText={setUpgradeBudget} prefix="USD" keyboardType="decimal-pad" />
+      )}
+      {activeMode === 'insurance' && (
+        <View style={styles.segmentedControl}>
+          {insurancePeriods.map((period) => (
+            <Pressable key={period.value} style={[styles.segmentButton, insuranceMonths === period.value && styles.segmentButtonActive]} onPress={() => setInsuranceMonths(period.value)}>
+              <Text style={[styles.segmentText, insuranceMonths === period.value && styles.segmentTextActive]}>{period.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      <View style={styles.toolInputSummaryGrid}>
+        {Object.entries(activeReport.results).slice(0, 6).map(([key, value]) => (
+          <View key={key} style={styles.toolInputSummaryItem}>
+            <Text style={styles.toolInputSummaryLabel}>{key}</Text>
+            <Text style={styles.toolInputSummaryValue}>{value}</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.profileActionRow}>
+        <Pressable
+          style={styles.primaryButton}
+          onPress={() => onSubmitListingToolApplication(activeMode === 'insurance' ? 'Request Home Insurance Quote' : activeMode === 'upgrade' ? 'Apply For Upgrade Financing' : 'Apply for Loan', activeReport)}
+        >
+          <Ionicons name="paper-plane-outline" size={18} color="#ffffff" />
+          <Text style={styles.primaryButtonText}>Apply for Loan</Text>
+        </Pressable>
+        <Pressable style={styles.secondaryButton} onPress={() => shareReport(activeReport)}>
+          <Ionicons name="share-outline" size={18} color="#0f766e" />
+          <Text style={styles.secondaryButtonText}>Share</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -4597,6 +4857,7 @@ function MessagesScreen({
 }) {
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) || null;
   const [replyText, setReplyText] = useState('');
+  const [showConversationProfile, setShowConversationProfile] = useState(false);
 
   const sendReply = () => {
     if (!activeConversation) {
@@ -4628,7 +4889,10 @@ function MessagesScreen({
           <Pressable
             key={conversation.id}
             style={[styles.messageRow, activeConversation?.id === conversation.id && styles.messageRowActive]}
-            onPress={() => setActiveConversationId(conversation.id)}
+            onPress={() => {
+              setActiveConversationId(conversation.id);
+              setShowConversationProfile(false);
+            }}
           >
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>{conversation.person.charAt(0)}</Text>
@@ -4648,18 +4912,20 @@ function MessagesScreen({
 
       {activeConversation ? (
         <View style={styles.inboxPanel}>
-          <View style={styles.panelHeader}>
+          <Pressable style={styles.panelHeader} onPress={() => setShowConversationProfile((value) => !value)}>
             <View>
               <Text style={styles.formTitle}>{activeConversation.person}</Text>
               <Text style={styles.panelHint}>
                 {activeConversation.role} · {activeConversation.listingTitle}
               </Text>
             </View>
-            <Pressable style={styles.secondaryButton} onPress={() => setActiveConversationId('')}>
-              <Ionicons name="chevron-back-outline" size={18} color="#0f766e" />
-              <Text style={styles.secondaryButtonText}>Chats</Text>
-            </Pressable>
-          </View>
+            <Ionicons name={showConversationProfile ? 'chevron-up-outline' : 'person-circle-outline'} size={26} color="#0f766e" />
+          </Pressable>
+          {showConversationProfile && <PublicProfileCard profile={activeConversation.profile || getConversationFallbackProfile(activeConversation)} />}
+          <Pressable style={styles.secondaryButton} onPress={() => setActiveConversationId('')}>
+            <Ionicons name="chevron-back-outline" size={18} color="#0f766e" />
+            <Text style={styles.secondaryButtonText}>Chats</Text>
+          </Pressable>
           {activeConversation.messages.map((message, index) => (
             <View key={`${activeConversation.id}-${index}`} style={styles.chatBubble}>
               <Text style={styles.chatText}>{message}</Text>
@@ -4693,10 +4959,69 @@ function MessagesScreen({
   );
 }
 
+const getConversationFallbackProfile = (conversation: Conversation): PublicProfileSnapshot => ({
+  name: conversation.person,
+  role: conversation.role,
+  verification: 'Listed on HomeSwipe',
+  location: conversation.listingTitle,
+  primaryLocation: conversation.listingTitle,
+  listerType: conversation.role
+});
+
+function PublicProfileCard({ profile }: { profile: PublicProfileSnapshot }) {
+  const facts = [
+    ['Location', profile.location],
+    ['Budget', profile.budget],
+    ['Employment', profile.employmentStatus],
+    ['Primary Location', profile.primaryLocation],
+    ['Properties', profile.propertyCount],
+    ['Lister Type', profile.listerType]
+  ].filter(([, value]) => Boolean(value));
+  const chips = [
+    ...(profile.propertyTypes || []),
+    ...(profile.amenities || []),
+    ...(profile.householdTypes || []),
+    ...(profile.leasePreferences || [])
+  ];
+
+  return (
+    <View style={styles.publicProfileCard}>
+      <View style={styles.hostPanel}>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{getInitial(profile.name || 'HomeSwipe user')}</Text>
+        </View>
+        <View style={styles.messageCopy}>
+          <Text style={styles.messageName}>{profile.name || 'HomeSwipe user'}</Text>
+          <Text style={styles.messageText}>{profile.role || 'User'}</Text>
+        </View>
+        <View style={styles.statusPill}>
+          <Text style={styles.statusPillText}>{profile.verification || 'Not Verified'}</Text>
+        </View>
+      </View>
+      <View style={styles.toolInputSummaryGrid}>
+        {facts.map(([label, value]) => (
+          <View key={label} style={styles.toolInputSummaryItem}>
+            <Text style={styles.toolInputSummaryLabel}>{label}</Text>
+            <Text style={styles.toolInputSummaryValue}>{value}</Text>
+          </View>
+        ))}
+      </View>
+      {chips.length > 0 && (
+        <View style={styles.quickSearchRail}>
+          {chips.map((chip) => (
+            <View key={chip} style={styles.quickSearchChip}>
+              <Text style={styles.quickSearchText}>{chip}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function ProfileScreen({
   accountProfile,
   applications,
-  currentSearch,
   currentUserEmail,
   currentUserName,
   documents,
@@ -4707,17 +5032,15 @@ function ProfileScreen({
   onboardingRole,
   savedListings,
   savedToolReports,
-  savedSearches,
   signUpMethod,
   tenantOnboarding,
   verificationRole,
   onMessageListing,
   onAddListing,
   onOpenListing,
-  onRemoveSavedSearch,
-  onSaveCurrentSearch,
   onToggleSavedListing,
   onDeleteListing,
+  onSubmitListingToolApplication,
   onRequireAuth,
   onSetVerificationRole,
   onSignOut,
@@ -4727,7 +5050,6 @@ function ProfileScreen({
 }: {
   accountProfile: AccountProfileInput;
   applications: RentalApplication[];
-  currentSearch: string;
   currentUserEmail: string;
   currentUserName: string;
   documents: VerificationDocument[];
@@ -4738,17 +5060,15 @@ function ProfileScreen({
   onboardingRole: OnboardingRole | null;
   savedListings: Listing[];
   savedToolReports: SavedToolReport[];
-  savedSearches: string[];
   signUpMethod: string;
   tenantOnboarding: TenantOnboardingInput;
   verificationRole: VerificationRole;
   onMessageListing: (listing: Listing) => void;
   onAddListing: () => void;
   onOpenListing: (listing: Listing) => void;
-  onRemoveSavedSearch: (search: string) => void;
-  onSaveCurrentSearch: (search: string) => void;
   onToggleSavedListing: (listingId: string) => void;
   onDeleteListing: (listingId: string) => void;
+  onSubmitListingToolApplication: (label: string, payload: ReportPayload) => void;
   onRequireAuth: (reason: string) => boolean;
   onSetVerificationRole: (role: VerificationRole) => void;
   onSignOut: () => void;
@@ -4757,6 +5077,7 @@ function ProfileScreen({
   onUpdateListing: (listing: Listing) => void;
 }) {
   const [profileView, setProfileView] = useState<ProfileView>('overview');
+  const [showProfileInfo, setShowProfileInfo] = useState(false);
   const [editingListingId, setEditingListingId] = useState<string | null>(null);
   const [deleteConfirmListingId, setDeleteConfirmListingId] = useState<string | null>(null);
   const [listingDraft, setListingDraft] = useState({
@@ -4786,9 +5107,9 @@ function ProfileScreen({
     profileView === 'overview'
       ? 'Profile'
       : profileView === 'landlordListings'
-        ? 'My listings'
+        ? 'My homes'
         : profileView === 'saved'
-          ? 'Saved homes'
+          ? 'Saved'
             : profileView === 'applications'
               ? 'Applications'
             : profileView === 'rating'
@@ -4797,8 +5118,8 @@ function ProfileScreen({
                 ? 'Personal information'
                 : profileView === 'documents'
                   ? 'Verification documents'
-                  : profileView === 'searches'
-                    ? 'Saved searches'
+                  : profileView === 'support'
+                    ? 'Support'
                     : 'Payment preferences';
   const profileDisplayName = isSignedIn ? currentUserName : 'Guest';
   const profileInitial = getInitial(profileDisplayName);
@@ -4877,6 +5198,16 @@ function ProfileScreen({
     setProfileView('overview');
   };
 
+  const emailSupport = (subject: string, body: string) => {
+    const url = `mailto:homeswipelistings@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.location.href = url;
+      return;
+    }
+
+    Linking.openURL(url).catch(() => undefined);
+  };
+
   if (!isSignedIn) {
     return (
       <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
@@ -4926,44 +5257,53 @@ function ProfileScreen({
               <Text style={styles.statValue}>{applications.length}</Text>
               <Text style={styles.statLabel}>Applications</Text>
             </Pressable>
-            <Pressable style={styles.statBlock} onPress={() => setProfileView('rating')}>
-              <Text style={styles.statValue}>0</Text>
-              <Text style={styles.statLabel}>Reviews</Text>
+            <Pressable style={styles.statBlock} onPress={() => setProfileView('landlordListings')}>
+              <Text style={styles.statValue}>{landlordListings.length}</Text>
+              <Text style={styles.statLabel}>My homes</Text>
             </Pressable>
           </View>
 
           <View style={styles.formPanel}>
-            <View style={styles.panelHeader}>
+            <Pressable style={styles.panelHeader} onPress={() => setShowProfileInfo((visible) => !visible)}>
               <View>
                 <Text style={styles.formTitle}>Profile information</Text>
-                <Text style={styles.panelHint}>Saved from signup, onboarding, verification, and applications.</Text>
+                <Text style={styles.panelHint}>Tap to view onboarding and verification details.</Text>
               </View>
-              <Ionicons name="person-circle-outline" size={26} color="#0f766e" />
-            </View>
-            <View style={styles.toolInputSummaryGrid}>
-              <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Signup</Text><Text style={styles.toolInputSummaryValue}>{signUpMethod}</Text></View>
-              <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Email</Text><Text style={styles.toolInputSummaryValue}>{accountProfile.email || currentUserEmail || 'Not provided'}</Text></View>
-              <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Role</Text><Text style={styles.toolInputSummaryValue}>{verificationRole}</Text></View>
-              <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Verification</Text><Text style={styles.toolInputSummaryValue}>{documents.every((document) => document.status === 'Verified') ? 'Verified' : 'Pending'}</Text></View>
-              {onboardingRole === 'tenant' ? (
-                <>
-                  <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>City</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.city || 'Not provided'}</Text></View>
-                  <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Budget</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.budget || 'Not provided'}</Text></View>
-                </>
-              ) : (
-                <>
-                  <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Location</Text><Text style={styles.toolInputSummaryValue}>{listerOnboarding.primaryLocation || 'Not provided'}</Text></View>
-                  <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Properties</Text><Text style={styles.toolInputSummaryValue}>{listerOnboarding.propertyCount || 'Not provided'}</Text></View>
-                </>
-              )}
-            </View>
+              <Ionicons name={showProfileInfo ? 'chevron-up-outline' : 'chevron-down-outline'} size={26} color="#0f766e" />
+            </Pressable>
+            {showProfileInfo && (
+              <View style={styles.toolInputSummaryGrid}>
+                <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Signup</Text><Text style={styles.toolInputSummaryValue}>{signUpMethod}</Text></View>
+                <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Email</Text><Text style={styles.toolInputSummaryValue}>{accountProfile.email || currentUserEmail || 'Not provided'}</Text></View>
+                <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Role</Text><Text style={styles.toolInputSummaryValue}>{verificationRole}</Text></View>
+                <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Verification</Text><Text style={styles.toolInputSummaryValue}>{documents.every((document) => document.status === 'Verified') ? 'Verified' : 'Pending'}</Text></View>
+                {onboardingRole === 'tenant' ? (
+                  <>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>City</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.city || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Budget</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.budget || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Property Types</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.propertyTypes.join(', ') || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Amenities</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.amenities.join(', ') || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Employment</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.employmentStatus || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Household</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.householdTypes.join(', ') || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Lease Preference</Text><Text style={styles.toolInputSummaryValue}>{tenantOnboarding.leasePreferences.join(', ') || 'Not provided'}</Text></View>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Location</Text><Text style={styles.toolInputSummaryValue}>{listerOnboarding.primaryLocation || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Properties</Text><Text style={styles.toolInputSummaryValue}>{listerOnboarding.propertyCount || 'Not provided'}</Text></View>
+                    <View style={styles.toolInputSummaryItem}><Text style={styles.toolInputSummaryLabel}>Lister Type</Text><Text style={styles.toolInputSummaryValue}>{listerOnboarding.listerType || 'Not provided'}</Text></View>
+                  </>
+                )}
+              </View>
+            )}
           </View>
 
           <View style={styles.settingsList}>
             {[
               { key: 'personal' as const, label: 'Personal information' },
+              { key: 'landlordListings' as const, label: 'My homes' },
               { key: 'documents' as const, label: 'Verification documents' },
-              { key: 'landlordListings' as const, label: 'My listings' },
+              { key: 'support' as const, label: 'Support' },
               { key: 'payments' as const, label: 'Payment preferences' }
             ].map((item) => (
               <Pressable key={item.key} style={styles.settingRow} onPress={() => setProfileView(item.key)}>
@@ -4997,13 +5337,13 @@ function ProfileScreen({
         <View style={styles.profileSection}>
           <Pressable style={styles.primaryButton} onPress={onAddListing}>
             <Ionicons name="add-outline" size={18} color="#ffffff" />
-            <Text style={styles.primaryButtonText}>Add listing</Text>
+            <Text style={styles.primaryButtonText}>Add home</Text>
           </Pressable>
           {landlordListings.length === 0 ? (
             <View style={styles.emptyPanel}>
               <Ionicons name="business-outline" size={30} color="#0f766e" />
-              <Text style={styles.formTitle}>No listings yet</Text>
-              <Text style={styles.panelHint}>Add a listing and it will appear here for edits.</Text>
+              <Text style={styles.formTitle}>No homes yet</Text>
+              <Text style={styles.panelHint}>Add rentals, homes for sale, or stands here. You can edit or delete them from this profile area.</Text>
             </View>
           ) : (
             landlordListings.map((listing) => {
@@ -5071,6 +5411,14 @@ function ProfileScreen({
                       <Text style={styles.leaseTitle}>{listing.title}</Text>
                       <Text style={styles.messageText}>{listing.location}</Text>
                       <Text style={styles.listingPrice}>{listing.price}</Text>
+                      <ListingFinancePanel
+                        currentUserEmail={currentUserEmail}
+                        currentUserName={currentUserName}
+                        listing={listing}
+                        monthlyIncomeEstimate={0}
+                        onboardingRole="lister"
+                        onSubmitListingToolApplication={onSubmitListingToolApplication}
+                      />
                       <View style={styles.profileActionRow}>
                         <Pressable style={styles.secondaryButton} onPress={() => onOpenListing(listing)}>
                           <Ionicons name="eye-outline" size={18} color="#0f766e" />
@@ -5253,20 +5601,55 @@ function ProfileScreen({
         </View>
       )}
 
-      {profileView === 'searches' && (
+      {profileView === 'support' && (
         <View style={styles.profileSection}>
-          <Pressable style={styles.primaryButton} onPress={() => onSaveCurrentSearch(currentSearch)}>
-            <Ionicons name="bookmark-outline" size={18} color="#ffffff" />
-            <Text style={styles.primaryButtonText}>Save current search</Text>
-          </Pressable>
-          {savedSearches.map((search) => (
-            <View key={search} style={styles.savedSearchRow}>
-              <Ionicons name="search-outline" size={20} color="#0f766e" />
-              <Text style={styles.settingText}>{search}</Text>
-              <Pressable accessibilityLabel="Remove saved search" onPress={() => onRemoveSavedSearch(search)}>
-                <Ionicons name="close-circle-outline" size={22} color="#64748b" />
-              </Pressable>
+          <View style={styles.formPanel}>
+            <View style={styles.panelHeader}>
+              <View style={styles.panelHeaderCopy}>
+                <Text style={styles.formTitle}>HomeSwipe Support</Text>
+                <Text style={styles.panelHint}>Get help with listings, verification, applications, payments, or account access.</Text>
+              </View>
+              <Ionicons name="help-buoy-outline" size={26} color="#0f766e" />
             </View>
+          </View>
+
+          {[
+            {
+              icon: 'mail-outline' as const,
+              title: 'Email support',
+              subtitle: 'homeswipelistings@gmail.com',
+              subject: 'HomeSwipe Support',
+              body: 'Hi HomeSwipe Support,\n\nI need help with: '
+            },
+            {
+              icon: 'home-outline' as const,
+              title: 'Listing help',
+              subtitle: 'Get support adding, editing, deleting, or managing homes.',
+              subject: 'HomeSwipe Listing Help',
+              body: 'Hi HomeSwipe Support,\n\nI need help with my listing.\n\nIssue: '
+            },
+            {
+              icon: 'shield-checkmark-outline' as const,
+              title: 'Verification help',
+              subtitle: 'Ask about optional verification and uploaded documents.',
+              subject: 'HomeSwipe Verification Help',
+              body: 'Hi HomeSwipe,\n\nI need help with verification documents.'
+            }
+          ].map((item) => (
+            <Pressable
+              key={item.title}
+              style={styles.settingRow}
+              onPress={() => {
+                emailSupport(item.subject, item.body);
+              }}
+            >
+              <Ionicons name={item.icon} size={22} color="#0f766e" />
+              <View style={styles.messageCopy}>
+                <Text style={styles.settingText}>{item.title}</Text>
+                <Text style={styles.messageText}>{item.subtitle}</Text>
+              </View>
+              <Ionicons name="chevron-forward-outline" size={22} color="#94a3b8" />
+            </Pressable>
           ))}
         </View>
       )}
@@ -5345,8 +5728,7 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0'
   },
   onboardingChoiceGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'column',
     gap: 10
   },
   onboardingChoice: {
@@ -5355,6 +5737,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 12,
+    width: '100%',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#ccfbf1',
@@ -5394,6 +5777,46 @@ const styles = StyleSheet.create({
   },
   onboardingActionTextSelected: {
     color: '#ffffff'
+  },
+  welcomeHero: {
+    height: 380,
+    overflow: 'hidden',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ccfbf1',
+    backgroundColor: '#0f172a'
+  },
+  welcomeHeroImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover'
+  },
+  welcomeHeroOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.34)'
+  },
+  welcomeHeroCopy: {
+    position: 'absolute',
+    left: 22,
+    right: 22,
+    bottom: 24,
+    gap: 14
+  },
+  welcomeBrandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  welcomeBrandText: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '900'
+  },
+  welcomeHeroTitle: {
+    color: '#ffffff',
+    fontSize: 42,
+    lineHeight: 48,
+    fontWeight: '400'
   },
   onboardingDocumentRow: {
     minHeight: 58,
@@ -5863,7 +6286,7 @@ const styles = StyleSheet.create({
   listGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 16
+    gap: 12
   },
   loadMoreButton: {
     alignSelf: 'center',
@@ -5885,16 +6308,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    width: Platform.OS === 'web' ? '48%' : '100%',
-    minWidth: Platform.OS === 'web' ? 320 : undefined
+    width: '48%',
+    flexGrow: 1,
+    flexBasis: Platform.OS === 'web' ? 260 : '47%',
+    maxWidth: Platform.OS === 'web' ? 560 : '49%'
   },
   listingImage: {
     width: '100%',
-    aspectRatio: 1.5,
+    aspectRatio: 1.28,
     backgroundColor: '#cbd5e1'
   },
   cardBody: {
-    padding: 14
+    padding: 10
   },
   cardTopline: {
     flexDirection: 'row',
@@ -5912,8 +6337,8 @@ const styles = StyleSheet.create({
   cardActionButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    width: 34,
-    height: 34,
+    width: 30,
+    height: 30,
     borderRadius: 8,
     backgroundColor: '#f8fafc',
     borderWidth: 1,
@@ -5922,26 +6347,27 @@ const styles = StyleSheet.create({
   listingTag: {
     flex: 1,
     color: '#0f766e',
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '800',
     textTransform: 'uppercase'
   },
   listingTitle: {
     color: '#0f172a',
-    fontSize: 19,
+    fontSize: 15,
     fontWeight: '800',
-    marginBottom: 4
+    marginBottom: 4,
+    lineHeight: 19
   },
   listingLocation: {
     color: '#475569',
-    fontSize: 15,
+    fontSize: 12,
     marginBottom: 6
   },
   listingMeta: {
     color: '#64748b',
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 12
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: 10
   },
   matchPill: {
     minHeight: 30,
@@ -5969,12 +6395,12 @@ const styles = StyleSheet.create({
   },
   listingPrice: {
     color: '#0f172a',
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '900'
   },
   hostName: {
     color: '#64748b',
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700'
   },
   detailHeader: {
@@ -5982,6 +6408,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 14
+  },
+  detailScreenContent: {
+    width: '100%',
+    maxWidth: 980,
+    alignSelf: 'center'
   },
   detailBackButton: {
     alignItems: 'center',
@@ -6004,6 +6435,7 @@ const styles = StyleSheet.create({
   heroPhoto: {
     width: '100%',
     aspectRatio: 1.55,
+    maxHeight: 520,
     borderRadius: 8,
     backgroundColor: '#cbd5e1'
   },
@@ -6019,28 +6451,34 @@ const styles = StyleSheet.create({
   },
   detailTitleRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 16,
     marginBottom: 16
   },
   detailTitleCopy: {
-    flex: 1
+    flex: 1,
+    minWidth: 240
   },
   detailTitle: {
     color: '#0f172a',
     fontSize: 28,
-    fontWeight: '900'
+    fontWeight: '900',
+    lineHeight: 34
   },
   detailLocation: {
     color: '#475569',
     fontSize: 16,
-    marginTop: 5
+    marginTop: 5,
+    lineHeight: 22
   },
   detailPrice: {
     color: '#0f766e',
     fontSize: 24,
-    fontWeight: '900'
+    fontWeight: '900',
+    lineHeight: 30,
+    flexShrink: 1
   },
   detailFactGrid: {
     flexDirection: 'row',
@@ -6053,6 +6491,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     minHeight: 42,
+    maxWidth: '100%',
     paddingHorizontal: 12,
     borderRadius: 8,
     backgroundColor: '#ffffff',
@@ -6060,6 +6499,7 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0'
   },
   detailFactText: {
+    flexShrink: 1,
     color: '#334155',
     fontSize: 14,
     fontWeight: '800'
@@ -6108,10 +6548,22 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0',
     marginBottom: 14
   },
+  publicProfileCard: {
+    gap: 12,
+    padding: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ccfbf1',
+    backgroundColor: '#f8fafc'
+  },
   detailActionBar: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10
+  },
+  detailActionBarButton: {
+    flexGrow: 1,
+    flexBasis: 180
   },
   calendarPanel: {
     gap: 12,

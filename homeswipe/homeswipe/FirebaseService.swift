@@ -69,13 +69,13 @@ struct HomeSwipeUserData: Codable {
     var onboardingRole: OnboardingRole? = nil
     var tenantOnboarding: TenantOnboardingInput? = nil
     var listerOnboarding: ListerOnboardingInput? = nil
+    var publicProfile: PublicProfileSnapshot? = nil
     var verificationState: VerificationState? = nil
     var verificationDocuments: [VerificationDocument]? = nil
     var applications: [RentalApplication] = []
     var conversations: [Conversation] = []
     var leases: [LeaseDraft] = []
     var savedListingIDs: [String] = []
-    var savedSearches: [String] = []
 }
 
 struct HomeSwipeRemoteState {
@@ -124,6 +124,11 @@ final class FirebaseService {
         let (configuration, session) = try requireSession()
         let path = "homeswipeListings/\(listing.id)"
         try await patchDocument(path: path, model: listing, configuration: configuration, session: session)
+    }
+
+    func deleteListing(_ listing: Listing) async throws {
+        let (configuration, session) = try requireSession()
+        try await deleteDocument(path: "homeswipeListings/\(listing.id)", configuration: configuration, session: session)
     }
 
     private func requireConfiguration() throws -> FirebaseConfiguration {
@@ -214,6 +219,25 @@ final class FirebaseService {
         request.httpBody = try JSONEncoder().encode(FirestoreWriteDocument(fields: makeFirestoreFields(from: model)))
 
         let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+    }
+
+    private func deleteDocument(
+        path: String,
+        configuration: FirebaseConfiguration,
+        session: FirebaseSession
+    ) async throws {
+        let url = URL(string: "https://firestore.googleapis.com/v1/projects/\(configuration.projectID)/databases/(default)/documents/\(path)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(session.idToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 404 {
+            return
+        }
+
         try validate(response: response, data: data)
     }
 
