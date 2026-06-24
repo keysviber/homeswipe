@@ -39,6 +39,7 @@ import {
   getDocs,
   limit as firestoreLimit,
   onSnapshot,
+  orderBy,
   query as firestoreQuery,
   QueryDocumentSnapshot,
   setDoc,
@@ -47,8 +48,6 @@ import {
 } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { auth, db, isFirebaseConfigured, storage } from './firebase';
-
-const welcomeHomeImage = require('../assets/welcome-home.jpeg');
 
 type TabKey = 'home' | 'tools' | 'messages' | 'profile';
 type ListingKind = 'rentals' | 'sales' | 'stands';
@@ -137,6 +136,9 @@ type LeaseDraft = {
 
 type Conversation = {
   id: string;
+  listingId?: string;
+  listingOwnerId?: string;
+  participantIds?: string[];
   person: string;
   role: string;
   listingTitle: string;
@@ -400,128 +402,9 @@ const removeDemoLeases = (leases: LeaseDraft[] = []) => {
   return leases.filter((lease) => !demoLeaseIds.has(lease.id));
 };
 
-const initialListings: Listing[] = [
-  {
-    id: '1',
-    kind: 'rentals',
-    title: 'Sunny 2 bed apartment',
-    location: 'Borrowdale, Harare',
-    price: '$850/mo',
-    meta: '2 beds · 2 baths · gated',
-    host: 'Moyo Properties',
-    image: 'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1560448075-bb485b067938?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1560185007-cde436f6a4d0?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1560448205-4d9b3e6bb6db?auto=format&fit=crop&w=1200&q=80'
-    ],
-    tag: 'Available now',
-    description: 'A bright apartment with open-plan living, secure access, and quick access to Borrowdale shops and schools.',
-    amenities: ['Gated security', 'Backup water', 'Fitted kitchen', 'Balcony'],
-    details: ['2 bedrooms', '2 bathrooms', 'Covered parking', 'Available immediately']
-  },
-  {
-    id: '2',
-    kind: 'rentals',
-    title: 'Modern garden cottage',
-    location: 'Avondale, Harare',
-    price: '$520/mo',
-    meta: '1 bed · furnished · Wi-Fi',
-    host: 'Tari Homes',
-    image: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1560184897-ae75f418493e?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?auto=format&fit=crop&w=1200&q=80'
-    ],
-    tag: 'Verified landlord',
-    description: 'A compact furnished cottage with a private garden, ideal for a single professional or couple.',
-    amenities: ['Furnished', 'Wi-Fi ready', 'Private garden', 'Solar backup'],
-    details: ['1 bedroom', '1 bathroom', 'Shared gate', 'Month-to-month accepted']
-  },
-  {
-    id: '3',
-    kind: 'sales',
-    title: 'Family home with pool',
-    location: 'Greendale, Harare',
-    price: '$180,000',
-    meta: '4 beds · 3 baths · title deed',
-    host: 'Prime Estates',
-    image: 'https://images.unsplash.com/photo-1605276374104-dee2a0ed3cd6?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1605276374104-dee2a0ed3cd6?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1600566752355-35792bedcfea?auto=format&fit=crop&w=1200&q=80'
-    ],
-    tag: 'For sale',
-    description: 'A spacious family home with mature trees, generous entertainment space, and a clean title deed.',
-    amenities: ['Swimming pool', 'Title deed', 'Staff quarters', 'Borehole'],
-    details: ['4 bedrooms', '3 bathrooms', 'Double garage', '1,800 sqm stand']
-  },
-  {
-    id: '4',
-    kind: 'sales',
-    title: 'Townhouse near schools',
-    location: 'Newlands, Harare',
-    price: '$130,000',
-    meta: '3 beds · garage · solar',
-    host: 'Kudu Realty',
-    image: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1600607688969-a5bfcd646154?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1600607687644-c7171b42498f?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1600210492493-0946911123ea?auto=format&fit=crop&w=1200&q=80'
-    ],
-    tag: 'Viewing today',
-    description: 'Low-maintenance townhouse near schools and shops, with modern finishes and reliable solar power.',
-    amenities: ['Solar system', 'Garage', 'Modern kitchen', 'Secure complex'],
-    details: ['3 bedrooms', '2.5 bathrooms', 'Sectional title', 'Viewing slots open']
-  },
-  {
-    id: '5',
-    kind: 'stands',
-    title: 'Ready-to-build stand',
-    location: 'Ruwa, Mashonaland East',
-    price: '$28,000',
-    meta: '600 sqm · serviced · cession',
-    host: 'Stand Market',
-    image: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1472396961693-142e6e269027?auto=format&fit=crop&w=1200&q=80'
-    ],
-    tag: 'Stands',
-    description: 'Serviced residential stand in a growing suburb with road access and paperwork ready for transfer.',
-    amenities: ['Serviced land', 'Road access', 'Council approved', 'Ready to build'],
-    details: ['600 sqm', 'Cession', 'Flat terrain', 'Marked boundaries']
-  },
-  {
-    id: '6',
-    kind: 'stands',
-    title: 'Corner stand in new suburb',
-    location: 'Norton, Mashonaland West',
-    price: '$18,500',
-    meta: '900 sqm · road access · council',
-    host: 'Green Acre Land',
-    image: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1518005020951-eccb494ad742?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=1200&q=80'
-    ],
-    tag: 'Popular',
-    description: 'A corner stand with generous frontage in a developing area suited for a family home or investment build.',
-    amenities: ['Corner stand', 'Road frontage', 'Council paperwork', 'Investment area'],
-    details: ['900 sqm', 'Council stand', 'Road access', 'Flexible payment terms']
-  }
-];
+// Stock listings are intentionally excluded. The feed is populated only by
+// listings whose owners uploaded photos to HomeSwipe storage.
+const initialListings: Listing[] = [];
 
 const tabs: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'home', label: 'Search', icon: 'search-outline' },
@@ -983,12 +866,26 @@ const uniqueListings = (listings: Listing[]) => {
   return listings.filter((listing, index, allListings) => allListings.findIndex((item) => item.id === listing.id) === index);
 };
 
+const uniqueConversations = (conversations: Conversation[]) => {
+  return conversations.filter((conversation, index, allConversations) => allConversations.findIndex((item) => item.id === conversation.id) === index);
+};
+
 const mapListingDocument = (listingDoc: QueryDocumentSnapshot<DocumentData>): Listing => {
   return {
     ...(listingDoc.data() as Listing),
     id: listingDoc.id
   };
 };
+
+const mapConversationDocument = (conversationDoc: QueryDocumentSnapshot<DocumentData>): Conversation => {
+  return {
+    ...(conversationDoc.data() as Conversation),
+    id: conversationDoc.id
+  };
+};
+
+const hasUserUploadedPhotos = (listing: Listing) =>
+  Boolean(listing.image && listing.storagePaths?.length && listing.image.includes('firebasestorage.googleapis.com'));
 
 const getListingFormSummary = (form: ListingForm) => {
   const roomDetails =
@@ -1134,6 +1031,7 @@ export default function App() {
       ? window.localStorage.getItem('homeswipe.web.onboarding.complete') === 'true'
       : false
   );
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [onboardingRole, setOnboardingRole] = useState<OnboardingRole | null>(null);
   const [signUpMethod, setSignUpMethod] = useState('Email');
@@ -1238,6 +1136,34 @@ export default function App() {
       return true;
     }
 
+    const isProtectedEntryAction = /add a home|publish your listing|start a chat/i.test(reason);
+    if (!isProtectedEntryAction) {
+      return true;
+    }
+
+    setAuthPrompt({ reason });
+    return false;
+  };
+
+  const requireOnboardingForProtectedAction = (reason: string) => {
+    if (!requireAuth(reason)) {
+      return false;
+    }
+
+    if (!didCompleteOnboarding) {
+      setOnboardingStep(1);
+      setShowOnboarding(true);
+      return false;
+    }
+
+    return true;
+  };
+
+  const requireSignedInAccount = (reason: string) => {
+    if (isSignedIn) {
+      return true;
+    }
+
     setAuthPrompt({ reason });
     return false;
   };
@@ -1255,6 +1181,7 @@ export default function App() {
 
   const finishOnboarding = () => {
     setDidCompleteOnboarding(true);
+    setShowOnboarding(false);
     setOnboardingStep(0);
     if (accountProfile.fullName.trim()) {
       setCurrentLandlordProfile((current) => ({
@@ -1524,6 +1451,25 @@ export default function App() {
       .catch(() => completeSave('Offline'));
   };
 
+  const saveSharedConversationToFirebase = (conversation: Conversation) => {
+    const firestore = db;
+    if (!firestore || !firebaseUser || !conversation.participantIds?.includes(firebaseUser.uid)) {
+      return;
+    }
+
+    const completeSave = beginFirebaseSave();
+    setDoc(
+      doc(firestore, 'homeswipeConversations', conversation.id),
+      {
+        ...conversation,
+        updatedAt: Date.now()
+      },
+      { merge: true }
+    )
+      .then(() => completeSave('Synced'))
+      .catch(() => completeSave('Offline'));
+  };
+
   useEffect(() => {
     if (!db) {
       setFirebaseStatus('Not configured');
@@ -1586,7 +1532,9 @@ export default function App() {
           setVerificationRole(data.verificationRole || 'Tenant');
           setVerificationDocuments(data.verificationDocuments || getVerificationDocumentsForRole(data.verificationRole || 'Tenant'));
           setSavedListingIds(data.savedListingIds || []);
-          setConversations(removeDemoConversations(data.conversations || initialConversations));
+          setConversations((currentConversations) =>
+            uniqueConversations([...removeDemoConversations(data.conversations || initialConversations), ...currentConversations])
+          );
           setApplications(removeDemoApplications(data.applications || initialApplications));
           setLeases(removeDemoLeases(data.leases || initialLeases));
         } else {
@@ -1630,7 +1578,7 @@ export default function App() {
     return onSnapshot(
       firestoreQuery(collection(firestore, 'homeswipeListings'), where('ownerId', '==', currentLandlordProfile.id)),
       (snapshot) => {
-        const remoteListings = snapshot.docs.map(mapListingDocument);
+        const remoteListings = snapshot.docs.map(mapListingDocument).filter(hasUserUploadedPhotos);
         setLandlordListings(uniqueListings(remoteListings));
         setOptimisticListings((currentListings) =>
           currentListings.filter((localListing) => !remoteListings.some((remoteListing) => remoteListing.id === localListing.id))
@@ -1639,6 +1587,23 @@ export default function App() {
       () => setFirebaseStatus('Offline')
     );
   }, [currentLandlordProfile.id, isFirebaseUserReady]);
+
+  useEffect(() => {
+    const firestore = db;
+    if (!firestore || !firebaseUser) {
+      return;
+    }
+
+    return onSnapshot(
+      firestoreQuery(collection(firestore, 'homeswipeConversations'), where('participantIds', 'array-contains', firebaseUser.uid)),
+      (snapshot) => {
+        const sharedConversations = snapshot.docs.map(mapConversationDocument);
+        setConversations((currentConversations) => uniqueConversations([...sharedConversations, ...currentConversations]));
+        setFirebaseStatus('Synced');
+      },
+      () => setFirebaseStatus('Offline')
+    );
+  }, [firebaseUser]);
 
   const loadListingsPage = async (mode: 'reset' | 'more') => {
     const firestore = db;
@@ -1663,12 +1628,13 @@ export default function App() {
           ? firestoreQuery(
               collection(firestore, 'homeswipeListings'),
               where('kind', '==', activeKind),
+              orderBy('sortOrder', 'desc'),
               startAfter(lastListingDoc),
               firestoreLimit(listingsPageSize)
             )
-          : firestoreQuery(collection(firestore, 'homeswipeListings'), where('kind', '==', activeKind), firestoreLimit(listingsPageSize));
+          : firestoreQuery(collection(firestore, 'homeswipeListings'), where('kind', '==', activeKind), orderBy('sortOrder', 'desc'), firestoreLimit(listingsPageSize));
       const snapshot = await getDocs(listingQuery);
-      const listings = snapshot.docs.map(mapListingDocument);
+      const listings = snapshot.docs.map(mapListingDocument).filter(hasUserUploadedPhotos);
 
       if (mode === 'reset' && snapshot.empty) {
         const fallbackListings = uniqueListings([...localLandlordListings, ...initialListings.filter((listing) => listing.kind === activeKind)]);
@@ -1747,7 +1713,7 @@ export default function App() {
   }, [accountProfile.email, accountProfile.employer, accountProfile.fullName, accountProfile.monthlyBudget, accountProfile.phone, applications, conversations, leases, isFirebaseUserReady, listerOnboarding, onboardingRole, savedListingIds, signUpMethod, tenantOnboarding, userDataDocId, verificationDocuments, verificationRole]);
 
   const addListing = async () => {
-    if (!requireAuth('Sign up to publish your listing and manage enquiries from tenants or buyers.')) {
+    if (!requireOnboardingForProtectedAction('Sign up to publish your listing and manage enquiries from tenants or buyers.')) {
       return;
     }
 
@@ -1785,19 +1751,15 @@ export default function App() {
       return;
     }
 
+    const uploadedPhotos = listingForm.localPhotos;
+    if (uploadedPhotos.length === 0) {
+      setListingPublishError('Upload at least one property photo before publishing.');
+      setListingStep(listingForm.kind === 'stands' ? 1 : 2);
+      return;
+    }
+
     setListingPublishError('');
     setIsPublishingListing(true);
-
-    const fallbackImage =
-      listingForm.kind === 'stands'
-        ? 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80'
-        : 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80';
-
-    const galleryPhotos = listingForm.photos
-      .split('\n')
-      .map((photo) => photo.trim())
-      .filter(Boolean);
-    const uploadedPhotos = listingForm.localPhotos;
     const amenities = listingForm.amenities
       .split(',')
       .map((amenity) => amenity.trim())
@@ -1832,8 +1794,8 @@ export default function App() {
       const uploadedPhotoResult = await uploadListingPhotos(uploadedPhotos, ownerId, listingId);
       uploadedStoragePaths = uploadedPhotoResult.storagePaths;
       const uploadedPhotoUrls = uploadedPhotos.map((photo) => uploadedPhotoResult.urlsByUri.get(photo) || photo);
-      const coverImage = uploadedPhotoUrls[0] || listingForm.image.trim() || fallbackImage;
-      const photos = [coverImage, ...uploadedPhotoUrls.slice(1), ...galleryPhotos, fallbackImage].filter(
+      const coverImage = uploadedPhotoUrls[0];
+      const photos = uploadedPhotoUrls.filter(
         (photo, index, allPhotos) => allPhotos.indexOf(photo) === index
       );
 
@@ -1901,13 +1863,18 @@ export default function App() {
   };
 
   const updateListing = (updatedListing: Listing) => {
-    if (!requireAuth('Sign in to edit and manage your published listings.')) {
+    if (!requireSignedInAccount('Sign in to edit and manage your published listings.')) {
+      return;
+    }
+
+    if (!firebaseUser || updatedListing.ownerId !== firebaseUser.uid) {
+      setFirebaseStatus('Offline');
       return;
     }
 
     const storedListing: Listing = {
       ...updatedListing,
-      ownerId: updatedListing.ownerId || currentLandlordProfile.id,
+      ownerId: firebaseUser.uid,
       ownerName: updatedListing.ownerName || currentLandlordProfile.displayName,
       updatedAt: Date.now()
     };
@@ -1926,12 +1893,16 @@ export default function App() {
   };
 
   const deleteListing = (listingId: string) => {
-    if (!requireAuth('Sign in to delete listings from your landlord dashboard.')) {
+    if (!requireSignedInAccount('Sign in to delete listings from your landlord dashboard.')) {
       return;
     }
 
     const knownListings = uniqueListings([...availableListings, ...optimisticListings, ...landlordListings]);
     const listingToDelete = knownListings.find((listing) => listing.id === listingId);
+    if (!firebaseUser || listingToDelete?.ownerId !== firebaseUser.uid) {
+      setFirebaseStatus('Offline');
+      return;
+    }
 
     setLandlordListings((currentListings) => currentListings.filter((listing) => listing.id !== listingId));
     setOptimisticListings((currentListings) => currentListings.filter((listing) => listing.id !== listingId));
@@ -1949,7 +1920,7 @@ export default function App() {
   };
 
   const openAddListingForm = () => {
-    if (!requireAuth('Sign up to add a home, stand, or rental listing.')) {
+    if (!requireOnboardingForProtectedAction('Sign up and complete onboarding to add a home, stand, or rental listing.')) {
       return;
     }
 
@@ -2021,44 +1992,54 @@ export default function App() {
   };
 
   const openListingConversation = (listing: Listing, openingMessage?: string) => {
-    if (!requireAuth('Sign up to start a chat with the landlord or agent.')) {
+    if (!requireOnboardingForProtectedAction('Sign up and complete onboarding to start a chat with the landlord or agent.')) {
       return;
     }
 
-    const conversationId = listing.host.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || listing.id;
+    const participantIds = [firebaseUser?.uid, listing.ownerId].filter((id): id is string => Boolean(id));
+    const conversationId = `${listing.id}-${firebaseUser?.uid || 'local'}`;
 
     setConversations((currentConversations) => {
       const existingConversation = currentConversations.find((conversation) => conversation.id === conversationId);
       if (existingConversation) {
         const nextConversations = currentConversations.map((conversation) =>
           conversation.id === conversationId && openingMessage
-            ? { ...conversation, time: 'Now', messages: [...conversation.messages, openingMessage] }
+            ? { ...conversation, participantIds, time: 'Now', messages: [...conversation.messages, openingMessage] }
             : conversation
         );
+        const nextConversation = nextConversations.find((conversation) => conversation.id === conversationId);
+        if (nextConversation) {
+          saveSharedConversationToFirebase(nextConversation);
+        }
         saveConversationsToFirebase(nextConversations);
         return nextConversations;
       }
 
-      const nextConversations = [
-        {
-          id: conversationId,
-          person: listing.host,
+      const newConversation: Conversation = {
+        id: conversationId,
+        listingId: listing.id,
+        listingOwnerId: listing.ownerId,
+        participantIds,
+        person: listing.host,
+        role: listing.kind === 'sales' || listing.kind === 'stands' ? 'Agent' : 'Landlord',
+        listingTitle: listing.title,
+        profile: {
+          name: listing.host,
           role: listing.kind === 'sales' || listing.kind === 'stands' ? 'Agent' : 'Landlord',
-          listingTitle: listing.title,
-          profile: {
-            name: listing.host,
-            role: listing.kind === 'sales' || listing.kind === 'stands' ? 'Agent' : 'Landlord',
-            verification: listing.tag === 'Verified landlord' ? 'Verified' : 'Listed on HomeSwipe',
-            location: listing.location,
-            primaryLocation: listing.location,
-            propertyCount: '1+',
-            listerType: listing.kind === 'sales' || listing.kind === 'stands' ? 'Real Estate Agent' : 'Landlord / Property Owner'
-          },
-          time: 'Now',
-          messages: [openingMessage || `Hi, I am interested in ${listing.title}. Is it still available?`]
+          verification: listing.tag === 'Verified landlord' ? 'Verified' : 'Listed on HomeSwipe',
+          location: listing.location,
+          primaryLocation: listing.location,
+          propertyCount: '1+',
+          listerType: listing.kind === 'sales' || listing.kind === 'stands' ? 'Real Estate Agent' : 'Landlord / Property Owner'
         },
+        time: 'Now',
+        messages: [openingMessage || `Hi, I am interested in ${listing.title}. Is it still available?`]
+      };
+      const nextConversations = [
+        newConversation,
         ...currentConversations
       ];
+      saveSharedConversationToFirebase(newConversation);
       saveConversationsToFirebase(nextConversations);
       return nextConversations;
     });
@@ -2151,6 +2132,10 @@ export default function App() {
           ? { ...conversation, time: 'Now', messages: [...conversation.messages, trimmedMessage] }
           : conversation
       );
+      const nextConversation = nextConversations.find((conversation) => conversation.id === conversationId);
+      if (nextConversation) {
+        saveSharedConversationToFirebase(nextConversation);
+      }
       saveConversationsToFirebase(nextConversations);
       return nextConversations;
     });
@@ -2276,10 +2261,17 @@ export default function App() {
         <AuthModal
           reason={authPrompt.reason}
           onClose={closeAuthPrompt}
-          onAuthed={closeAuthPrompt}
+          onAuthed={() => {
+            closeAuthPrompt();
+            if (!didCompleteOnboarding) {
+              setOnboardingStep(1);
+              setShowOnboarding(true);
+            }
+          }}
           onNewAccountCreated={() => {
             setDidCompleteOnboarding(false);
-            setOnboardingStep(0);
+            setOnboardingStep(1);
+            setShowOnboarding(true);
             if (Platform.OS === 'web' && typeof window !== 'undefined') {
               window.localStorage.removeItem('homeswipe.web.onboarding.complete');
             }
@@ -2296,10 +2288,6 @@ export default function App() {
               accessibilityState={{ selected }}
               key={tab.key}
               onPress={() => {
-                if (tab.key !== 'home' && !requireAuth(`Sign up to use ${tab.label.toLowerCase()} and keep your HomeSwipe activity synced.`)) {
-                  return;
-                }
-
                 setActiveTab(tab.key);
               }}
               style={[styles.tabButton, selected && styles.tabButtonActive]}
@@ -2316,7 +2304,7 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" />
-      {!didCompleteOnboarding ? (
+      {showOnboarding ? (
         <OnboardingScreen
           accountProfile={accountProfile}
           listerOnboarding={listerOnboarding}
@@ -2735,7 +2723,6 @@ function OnboardingScreen({
 function WelcomeHero() {
   return (
     <View style={styles.welcomeHero}>
-      <Image source={welcomeHomeImage} style={styles.welcomeHeroImage} />
       <View style={styles.welcomeHeroOverlay} />
       <View style={styles.welcomeHeroCopy}>
         <View style={styles.welcomeBrandRow}>
@@ -3336,14 +3323,7 @@ function HomeScreen({
                   ))}
                 </View>
               )}
-              <View style={styles.formFieldFull}>
-                <Text style={styles.formLabel}>Cover image URL</Text>
-                <TextInput placeholder="Optional" placeholderTextColor="#94a3b8" value={listingForm.image} onChangeText={(value) => setListingForm((current) => ({ ...current, image: value }))} style={styles.formInput} />
-              </View>
-              <View style={styles.formFieldFull}>
-                <Text style={styles.formLabel}>More photo URLs</Text>
-                <TextInput placeholder="One per line" placeholderTextColor="#94a3b8" value={listingForm.photos} onChangeText={(value) => setListingForm((current) => ({ ...current, photos: value }))} style={[styles.formInput, styles.multilineInput]} multiline />
-              </View>
+              <Text style={styles.panelHint}>At least one photo uploaded from your device is required.</Text>
               <View style={styles.formFieldFull}>
                 <Text style={styles.formLabel}>Description</Text>
                 <TextInput placeholder="Describe your place" placeholderTextColor="#94a3b8" value={listingForm.description} onChangeText={(value) => setListingForm((current) => ({ ...current, description: value }))} style={[styles.formInput, styles.multilineInput]} multiline />

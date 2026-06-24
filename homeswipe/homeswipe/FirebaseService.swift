@@ -62,6 +62,12 @@ struct FirebaseSession: Decodable {
     }
 }
 
+private struct FirebaseStorageUploadResponse: Decodable {
+    let name: String
+    let bucket: String
+    let downloadTokens: String?
+}
+
 struct HomeSwipeUserData: Codable {
     var profileName: String? = nil
     var signUpMethod: String? = nil
@@ -129,6 +135,31 @@ final class FirebaseService {
     func deleteListing(_ listing: Listing) async throws {
         let (configuration, session) = try requireSession()
         try await deleteDocument(path: "homeswipeListings/\(listing.id)", configuration: configuration, session: session)
+    }
+
+    func uploadListingImage(_ data: Data, listingID: String) async throws -> String {
+        let (configuration, session) = try requireSession()
+        let objectName = "homeswipeUsers/\(session.localID)/listings/\(listingID)/photos/cover.jpg"
+        guard let encodedName = objectName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://firebasestorage.googleapis.com/v0/b/\(configuration.storageBucket)/o?uploadType=media&name=\(encodedName)") else {
+            throw FirebaseServiceError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(session.idToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: responseData)
+        let payload = try JSONDecoder().decode(FirebaseStorageUploadResponse.self, from: responseData)
+        var objectPathCharacters = CharacterSet.urlPathAllowed
+        objectPathCharacters.remove(charactersIn: "/")
+        let encodedObject = payload.name.addingPercentEncoding(withAllowedCharacters: objectPathCharacters) ?? payload.name
+        let token = payload.downloadTokens?.split(separator: ",").first.map(String.init) ?? ""
+        guard !token.isEmpty else { throw FirebaseServiceError.invalidResponse }
+        return "https://firebasestorage.googleapis.com/v0/b/\(payload.bucket)/o/\(encodedObject)?alt=media&token=\(token)"
     }
 
     private func requireConfiguration() throws -> FirebaseConfiguration {

@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import UniformTypeIdentifiers
+import PhotosUI
 
 struct ContentView: View {
     @State private var store = HomeSwipeStore()
@@ -9,8 +10,7 @@ struct ContentView: View {
         ZStack {
             Color(hex: "#f8fafc").ignoresSafeArea()
 
-            if store.didCompleteOnboarding {
-                ZStack(alignment: .bottom) {
+            ZStack(alignment: .bottom) {
                     VStack(spacing: 0) {
                         Group {
                             switch store.activeTab {
@@ -30,9 +30,6 @@ struct ContentView: View {
                     }
 
                     BottomTabBar(activeTab: $store.activeTab)
-                }
-            } else {
-                OnboardingScreen(store: $store)
             }
         }
         .sheet(item: $store.selectedListing) { listing in
@@ -41,10 +38,17 @@ struct ContentView: View {
                 isSaved: store.savedListingIDs.contains(listing.id),
                 affordabilityProfile: store.affordabilityProfileContext,
                 onToggleSaved: { store.toggleSaved(listing) },
+                onChat: {
+                    store.selectedListing = nil
+                    store.startChat(for: listing)
+                },
                 onSubmitToolApplication: { title, report in
                     store.submitToolApplication(title: title, report: report)
                 }
             )
+        }
+        .fullScreenCover(isPresented: $store.isShowingOnboarding) {
+            OnboardingScreen(store: $store)
         }
         .task {
             await store.startFirebase()
@@ -244,6 +248,7 @@ struct ListingDraft {
     var area = ""
     var city = ""
     var price = ""
+    var photoData: Data?
 }
 
 struct ListingEditDraft {
@@ -461,6 +466,9 @@ final class HomeSwipeStore {
     var filters = HomeFilters()
     var showFilters = false
     var showAddListing = false
+    var isShowingOnboarding = false
+    var pendingChatListing: Listing?
+    var listingUploadStatus = ""
     var listingDraft = ListingDraft()
     var firebaseStatus = "Not configured"
     var profileName = "Guest"
@@ -586,6 +594,12 @@ final class HomeSwipeStore {
             verificationState = savedStatus
         }
         configureVerificationDocuments()
+        listings.removeAll { $0.imageURL.contains("images.unsplash.com") }
+        // Launch into browsing every time. Signup/onboarding is presented only
+        // by requestAddListing() or startChat(for:).
+        activeTab = .home
+        isShowingOnboarding = false
+        onboardingStep = 0
     }
 
     var activeHomeFilterCount: Int {
@@ -778,8 +792,9 @@ final class HomeSwipeStore {
         do {
             let remoteState = try await firebase.connectAndLoad()
 
-            if !remoteState.listings.isEmpty {
-                listings = mergeListings(local: listings, remote: remoteState.listings)
+            let uploadedListings = remoteState.listings.filter { $0.imageURL.contains("firebasestorage.googleapis.com") }
+            if !uploadedListings.isEmpty {
+                listings = mergeListings(local: listings, remote: uploadedListings)
             }
 
             if let userData = remoteState.userData {
@@ -807,20 +822,58 @@ final class HomeSwipeStore {
         syncUserData()
     }
 
+    func requestAddListing() {
+        guard didCompleteOnboarding else {
+            onboardingStep = 0
+            isShowingOnboarding = true
+            return
+        }
+        showAddListing.toggle()
+    }
+
     func addListing() {
-        let location = [listingDraft.area, listingDraft.city]
+        guard didCompleteOnboarding else {
+            onboardingStep = 0
+            isShowingOnboarding = true
+            return
+        }
+        guard let photoData = listingDraft.photoData else {
+            listingUploadStatus = "Upload at least one property photo before publishing."
+            return
+        }
+
+        let draft = listingDraft
+        listingUploadStatus = "Uploading photo..."
+        Task {
+            do {
+                let listingID = UUID().uuidString
+                let imageURL = try await firebase.uploadListingImage(photoData, listingID: listingID)
+                await MainActor.run {
+                    publishListing(id: listingID, draft: draft, imageURL: imageURL)
+                    listingUploadStatus = ""
+                }
+            } catch {
+                await MainActor.run {
+                    listingUploadStatus = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func publishListing(id: String, draft: ListingDraft, imageURL: String) {
+        let location = [draft.area, draft.city]
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .joined(separator: ", ")
 
         let listing = Listing(
-            id: UUID().uuidString,
+            id: id,
             kind: activeKind,
-            title: listingDraft.propertyType.isEmpty ? "New listing" : listingDraft.propertyType,
-            location: listingDraft.location.isEmpty ? location : listingDraft.location,
-            price: listingDraft.price.isEmpty ? "Price on request" : "$\(listingDraft.price)",
-            meta: listingDraft.spaceType.isEmpty ? "Details available on request" : listingDraft.spaceType,
+            title: draft.propertyType.isEmpty ? "New listing" : draft.propertyType,
+            location: draft.location.isEmpty ? location : draft.location,
+            price: draft.price.isEmpty ? "Price on request" : "$\(draft.price)",
+            meta: draft.spaceType.isEmpty ? "Details available on request" : draft.spaceType,
             host: profileName,
-            imageURL: listings.first?.imageURL ?? "",
+            imageURL: imageURL,
             tag: "New",
             description: "Recently added from the SwiftUI listing form.",
             amenities: ["Direct listing"],
@@ -900,6 +953,16 @@ final class HomeSwipeStore {
     }
 
     func startChat(for listing: Listing) {
+        guard didCompleteOnboarding else {
+            pendingChatListing = listing
+            onboardingStep = 0
+            isShowingOnboarding = true
+            return
+        }
+        startAuthorizedChat(for: listing)
+    }
+
+    private func startAuthorizedChat(for listing: Listing) {
         let conversationID = "listing-\(listing.id)"
         if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
             conversations[index].time = "Now"
@@ -961,6 +1024,7 @@ final class HomeSwipeStore {
     func finishOnboarding() {
         didCompleteOnboarding = true
         onboardingStep = 0
+        isShowingOnboarding = false
 
         if onboardingRole == .tenant {
             activeTab = .home
@@ -974,6 +1038,12 @@ final class HomeSwipeStore {
         persistOnboardingState()
         persistLocalUserSnapshot()
         syncUserData()
+
+        if let listing = pendingChatListing {
+            pendingChatListing = nil
+            startAuthorizedChat(for: listing)
+            activeTab = .messages
+        }
     }
 
     func openVerificationCenter() {
@@ -3667,7 +3737,7 @@ struct HomeHeader: View {
 
             if store.onboardingRole != .tenant {
                 Button {
-                    store.showAddListing.toggle()
+                    store.requestAddListing()
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: store.showAddListing ? "xmark" : "plus")
@@ -3779,6 +3849,7 @@ struct FilterPanel: View {
 
 struct AddListingPanel: View {
     @Binding var store: HomeSwipeStore
+    @State private var selectedPhoto: PhotosPickerItem?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -3805,6 +3876,32 @@ struct AddListingPanel: View {
                 FilterInput(title: "Suburb or area", text: $store.listingDraft.area)
                 FilterInput(title: "City", text: $store.listingDraft.city)
                 FilterInput(title: "Price", text: $store.listingDraft.price)
+            }
+
+            PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                Label(store.listingDraft.photoData == nil ? "Upload property photo" : "Replace property photo", systemImage: "photo.badge.plus")
+                    .font(.system(size: 15, weight: .heavy))
+                    .foregroundStyle(Color.hex("#0f766e"))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.hex("#0f766e"), lineWidth: 1))
+            }
+            .onChange(of: selectedPhoto) { _, item in
+                guard let item else { return }
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        await MainActor.run {
+                            store.listingDraft.photoData = data
+                            store.listingUploadStatus = "Photo ready to upload"
+                        }
+                    }
+                }
+            }
+
+            if !store.listingUploadStatus.isEmpty {
+                Text(store.listingUploadStatus)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(store.listingUploadStatus.contains("least one") ? Color.red : Color.hex("#64748b"))
             }
 
             Button {
@@ -3943,6 +4040,7 @@ struct ListingDetailView: View {
     let isSaved: Bool
     let affordabilityProfile: AffordabilityProfileContext
     let onToggleSaved: () -> Void
+    let onChat: () -> Void
     let onSubmitToolApplication: (String, ToolReport) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showsAffordabilityAssistant = false
@@ -4045,6 +4143,17 @@ struct ListingDetailView: View {
                     FlowRow(items: listing.details)
                     DetailSection(title: "Description", lines: [listing.description])
                     DetailSection(title: "Amenities", lines: listing.amenities)
+
+                    Button(action: onChat) {
+                        Label("Chat now", systemImage: "message")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(Color.hex("#0f766e"))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
 
                     HStack(spacing: 12) {
                         Circle()
@@ -4992,13 +5101,7 @@ struct RemoteListingImage: View {
                     .resizable()
                     .scaledToFill()
             default:
-                Rectangle()
-                    .fill(Color.hex("#cbd5e1"))
-                    .overlay(
-                        Image(systemName: "house")
-                            .font(.largeTitle)
-                            .foregroundStyle(Color.white.opacity(0.85))
-                    )
+                Color.clear
             }
         }
         .clipped()
